@@ -1,12 +1,27 @@
 # Obsidian Knowledge MCP
 
-[中文部署指引](docs/CLOUDFLARE_SETUP.zh-CN.md) · [Security](SECURITY.md)
+[中文部署指引](docs/CLOUDFLARE_SETUP.zh-CN.md) · [Mac 双向同步验收](docs/MAC_BIDIRECTIONAL_SYNC.zh-CN.md) · [Security](SECURITY.md)
 
-**v0.1.0 — Remote read-only research vault on Cloudflare R2.**
+**v0.2.0 — Cloudflare R2 research vault with optional, independently approved note writes.**
 
 Obsidian on Mac / iPad remains your editor. Remotely Save syncs notes to a private Cloudflare R2 bucket. A Cloudflare Worker exposes an OAuth-authenticated MCP endpoint so ChatGPT and Slack Jarvis can read and search notes even when the Mac is offline.
 
-**Deployment status:** Code and synthetic tests are committed; the real Cloudflare account, R2 bucket, Worker, Mac vault and ChatGPT/Slack connectors are **not yet configured or verified**. No real notes are present in this GitHub repository.
+**Deployment status:** The v0.1 read-only Worker, isolated R2 test vault and ChatGPT connection have been verified. The v0.2 reviewed writes are under development and NOT yet enabled on the live Cloudflare Worker. Real Mac cloud-to-local sync acceptance is pending. This GitHub repository contains no private notes.
+
+## v0.2: owner-reviewed note writes (default OFF)
+
+The optional write mode adds six MCP tools: **plan_note_changes**, **get_note_plan**, **apply_note_changes**, **cancel_note_plan**, **plan_note_undo**, **list_note_history**. They are registered only when the host sets ENABLE_REVIEWED_WRITES=true.
+
+- Restricts write paths to the INSES/ folder; no unrestricted vault mutation, deletion, renames or binary attachment uploads.
+- Allows a reviewed batch of at most five Markdown changes (create, replace, unique-string patch, simple YAML frontmatter patch).
+- Saves immutable exact-before/after previews, checks R2 ETags when applying and persists individual receipts in a singleton SQLite Durable Object.
+- **Requires the owner to open a separate password-protected review page** and inspect the full content before approval; the MCP client cannot bypass this with a confirmation flag.
+- An interrupted or uncertain write is NOT automatically retried. Cross-note changes are not atomic.
+- Already-created files are not automatically deleted by undo. Only successfully applied edits to unchanged files can be restored with a second owner approval.
+- **After an R2 write, the Mac remains unverified** until Remotely Save executes a bidirectional sync and the user checks the actual local note. The tool reports mac_sync_status=not_verified.
+- A Mac with pending offline changes cannot be detected by cloud ETag checks. Preserve backups and avoid concurrent local/cloud editing of the same file.
+
+See [the Mac bidirectional pull-and-conflict acceptance checklist](docs/MAC_BIDIRECTIONAL_SYNC.zh-CN.md). The public OAuth MCP URL and login password are unchanged when reviewed writes are enabled.
 
 ## Architecture
 
@@ -41,7 +56,7 @@ This code derives from [dszp/obsidian-mcp-cloudflare](https://github.com/dszp/ob
 
 In `get_note_graph`, destinations can be `resolved`, `ambiguous` or `missing`. Links are *observations from your notes*, **not** verified scholarly evidence or inferred conceptual claims. Pagination caps R2 I/O per call.
 
-**Read-only is enforced by a server-side default-deny tool allowlist.** No AI-initiated create, update, rename, delete, attachment upload, periodic note mutation or admin backfill is available. The direct HTTP `/upload` endpoint returns 404. Desktop Obsidian still syncs normally with its own independent S3/R2 credentials.
+**Default remains read-only.** The server-side allowlist exposes only the 11 read tools unless the deployer explicitly enables reviewed writes. Direct upstream create/edit/delete/attachment upload and `/upload` remain blocked in either mode. Desktop Obsidian syncs normally through independent R2 credentials.
 
 ## Recommended: browser-only deployment through GitHub Actions
 
@@ -87,7 +102,7 @@ npx tsc --noEmit
 ```
 
 - **v0.1**: cloud read-only MCP + note search + links/tags + safe deterministic graph + synthetic CI.
-- **v0.2**: exact-diff browser-approved notes writes, R2 conditional ETags, durable audit, conflict detection and separate rollback.
+- **v0.2**: exact-diff browser-approved writes, R2 conditional ETags, durable receipts and separate undo for edits; Mac cloud-to-local sync and offline conflicts require live tests before use.
 - **v0.3**: Zotero Key → literature note linking, citations and source provenance from PDFs/Slack/Figma.
 - **v0.4**: typed note graph (paper/concept/method/dataset/question), explicit claims vs personal hypotheses, reproducible evidence trails.
 
