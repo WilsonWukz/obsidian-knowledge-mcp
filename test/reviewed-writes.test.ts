@@ -9,7 +9,7 @@ import { handleReview } from "../src/review/http";
 
 const base="https://vault.example.test";
 const configured = () => ({ ...env, ENABLE_REVIEWED_WRITES:"true",
-  AUTH_PASSWORD:"test-password-0123456789abcdef",
+  AUTH_PASSWORD:"test-password-0123456789abcdef0123456789",
   SERVICE_BASE_URL:base,
 } as Env);
 const vault = () => new R2Client(env.VAULT,makeCfg());
