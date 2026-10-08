@@ -1,0 +1,1737 @@
+import { env } from "cloudflare:test";
+import { describe, expect, it, beforeEach } from "vitest";
+import { R2Client } from "../src/vault/r2-client";
+import {
+  listNotes,
+  readNote,
+  createNote,
+  replaceNote,
+  replaceBody,
+  deleteNote,
+  patchNote,
+  moveNote,
+} from "../src/mcp/tools/notes";
+import { generatePermalink, parseFrontmatter, patchFrontmatter } from "../src/mcp/tools/metadata";
+import { getOrCreatePeriodicNote, appendToPeriodicNote } from "../src/mcp/tools/periodic";
+import { type NoteRow, type Store, VaultIndex } from "../src/vault/index-store";
+import { extractIdFromFrontmatter, extractTags, extractWikilinks } from "../src/vault/markdown";
+import {
+  deleteAttachment,
+  headAttachment,
+  listAttachments,
+  moveAttachment,
+  readAttachment,
+  uploadAttachmentUrl,
+} from "../src/mcp/tools/attachments";
+import { makeCfg } from "./_helpers";
+
+const NANOID_RE = /^[A-Za-z0-9_-]{21}$/;
+
+const cfg = makeCfg();
+const cfgWithPermalink = makeCfg({ permalinkBaseUrl: "https://o.example.test" });
+
+async function reset() {
+  const list = await env.VAULT.list();
+  if (list.objects.length) await env.VAULT.delete(list.objects.map((o) => o.key));
+}
+
+class MemoryStore implements Store {
+  rows = new Map<string, NoteRow>();
+  init(): void {}
+  getEtags(): Map<string, string> {
+    return new Map([...this.rows].map(([p, r]) => [p, r.etag]));
+  }
+  upsert(row: NoteRow): void {
+    this.rows.set(row.path, row);
+  }
+  delete(path: string): void {
+    this.rows.delete(path);
+  }
+  search(): { path: string; body: string }[] {
+    return [];
+  }
+  tags(): string[] {
+    return [];
+  }
+  backlinks(target: string): string[] {
+    const out: string[] = [];
+    for (const r of this.rows.values()) if (r.wikilinks.includes(target)) out.push(r.path);
+    return out.sort();
+  }
+  findReferrers(fromPath: string, fromBasename: string, fromPathNoExt: string): string[] {
+    const suffix = "/" + fromBasename;
+    const out: string[] = [];
+    for (const r of this.rows.values()) {
+      if (
+        r.wikilinks.some(
+          (w) =>
+            w === fromBasename ||
+            w === fromPathNoExt ||
+            w === fromPath ||
+            w.endsWith(suffix),
+        )
+      ) {
+        out.push(r.path);
+      }
+    }
+    return out.sort();
+  }
+}
+
+function newIndex(vault: R2Client) {
+  const store = new MemoryStore();
+  const index = new VaultIndex(store, vault);
+  index.init();
+  return { store, index };
+}
+
+describe("note tools", () => {
+  beforeEach(reset);
+
+  it("listNotes returns markdown paths", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("a.md", "x");
+    await c.put("b.md", "y");
+    expect((await listNotes(c, cfg)).sort()).toEqual(["a.md", "b.md"]);
+  });
+
+  it("readNote returns ok with content for an existing note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "body");
+    const r = await readNote(c, cfg, { path: "n.md" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({
+        path: "n.md",
+        content: "body",
+        permalink: null,
+        frontmatter: {},
+      });
+      expect(typeof r.value.etag).toBe("string");
+    }
+  });
+
+  it("readNote returns not_found for a missing note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await readNote(c, cfg, { path: "missing.md" });
+    expect(r).toEqual({ ok: false, reason: "not_found", path: "missing.md" });
+  });
+
+  it("createNote injects a fresh nanoid into frontmatter when missing", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.path).toBe("n.md");
+      expect(typeof r.value.etag).toBe("string");
+      const id = extractIdFromFrontmatter(r.value.content);
+      expect(id).toMatch(NANOID_RE);
+      expect(r.value.content).toContain("v1");
+      expect(r.value.content).toBe(await c.get("n.md"));
+    }
+  });
+
+  it("createNote preserves a caller-supplied id and leaves bytes untouched", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const supplied = "ABCdefGHIjkl_MNO-1234";
+    const content = `---\nid: ${supplied}\ntitle: foo\n---\nbody\n`;
+    const r = await createNote(c, cfg, { path: "n.md", content });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.content).toBe(content);
+      expect(extractIdFromFrontmatter(r.value.content)).toBe(supplied);
+    }
+  });
+
+  it("createNote returns exists when the note already exists", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await createNote(c, cfg, { path: "n.md", content: "v1" });
+    const r = await createNote(c, cfg, { path: "n.md", content: "v2" });
+    expect(r).toEqual({ ok: false, reason: "exists", path: "n.md" });
+  });
+
+  it("replaceNote preserves the existing id even if the new content omits it", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const id = "KEEP-this-ID-12345abc";
+    await c.put("n.md", `---\nid: ${id}\ntitle: old\n---\nold body`);
+    const r = await replaceNote(c, cfg, { path: "n.md", content: "totally new" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(extractIdFromFrontmatter(r.value.content)).toBe(id);
+      expect(r.value.content).toContain("totally new");
+    }
+  });
+
+  it("replaceNote preserves the existing id even if the caller supplies a different one", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const original = "ORIGINAL-id-keepme-22";
+    const caller = "CALLER-id-ignored-22z";
+    await c.put("n.md", `---\nid: ${original}\n---\n`);
+    const r = await replaceNote(c, cfg, {
+      path: "n.md",
+      content: `---\nid: ${caller}\ntitle: x\n---\nbody`,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(extractIdFromFrontmatter(r.value.content)).toBe(original);
+      expect(r.value.content).not.toContain(caller);
+    }
+  });
+
+  it("replaceNote mints a fresh id when the existing note has none", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "no frontmatter here\n");
+    const r = await replaceNote(c, cfg, { path: "n.md", content: "v2" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(extractIdFromFrontmatter(r.value.content)).toMatch(NANOID_RE);
+      expect(r.value.content).toContain("v2");
+    }
+  });
+
+  it("replaceNote salvages a malformed-existing-frontmatter note by minting a fresh id (does NOT error)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\ntitle: never closed\n");
+    const r = await replaceNote(c, cfg, { path: "n.md", content: "all new content" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(extractIdFromFrontmatter(r.value.content)).toMatch(NANOID_RE);
+    }
+  });
+
+  it("replaceNote returns malformed_frontmatter when the SUPPLIED content has an unterminated opener", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: existing-id-keepit-22\n---\nbody");
+    const r = await replaceNote(c, cfg, { path: "n.md", content: "---\ntitle: never closed\n" });
+    expect(r).toEqual({ ok: false, reason: "malformed_frontmatter", path: "n.md" });
+  });
+
+  it("replaceNote returns not_found for a missing note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await replaceNote(c, cfg, { path: "missing.md", content: "x" });
+    expect(r).toEqual({ ok: false, reason: "not_found", path: "missing.md" });
+  });
+
+  it("replaceBody preserves frontmatter byte-for-byte and replaces body", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const fm = "---\ntitle: Foo\ncreated: 2026-05-12\ntags:\n  - a\n  - b\n---\n";
+    await c.put("n.md", fm + "old body line 1\nold body line 2\n");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "new body\n" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("n.md")).toBe(fm + "new body\n");
+  });
+
+  it("replaceBody on a note without frontmatter replaces the entire content", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "no frontmatter here");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "fresh content" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("n.md")).toBe("fresh content");
+  });
+
+  it("replaceBody returns malformed_frontmatter when opening --- has no closing fence", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\ntitle: Foo\nno closing fence below\nstill not it\n");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "x" });
+    expect(r).toEqual({ ok: false, reason: "malformed_frontmatter", path: "n.md" });
+  });
+
+  it("replaceBody preserves complex frontmatter (nested maps, quoted colons, Templater)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const fm =
+      "---\n" +
+      "title: \"Project: phase 2\"\n" +
+      "people:\n" +
+      "  - name: alice\n" +
+      "    role: lead\n" +
+      "  - name: bob\n" +
+      "    role: dev\n" +
+      "templater: '<% tp.date.now() %>'\n" +
+      "tags: [a, b, c]\n" +
+      "---\n";
+    await c.put("n.md", fm + "old body");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "new body" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("n.md")).toBe(fm + "new body");
+  });
+
+  it("replaceBody returns not_found for a missing note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await replaceBody(c, cfg, { path: "missing.md", body: "x" });
+    expect(r).toEqual({ ok: false, reason: "not_found", path: "missing.md" });
+  });
+
+  it("replaceBody preserves body containing --- horizontal rules", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const fm = "---\ntitle: x\n---\n";
+    await c.put("n.md", fm + "old body");
+    const body = "section A\n\n---\n\nsection B\n";
+    const r = await replaceBody(c, cfg, { path: "n.md", body });
+    expect(r.ok).toBe(true);
+    expect(await c.get("n.md")).toBe(fm + body);
+  });
+
+  it("replaceBody preserves CRLF line endings in existing frontmatter", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const fm = "---\r\ntitle: x\r\n---\r\n";
+    await c.put("n.md", fm + "old body");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "new body" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("n.md")).toBe(fm + "new body");
+  });
+
+  it("deleteNote removes a note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "x");
+    await deleteNote(c, cfg, { path: "n.md" });
+    expect(await c.get("n.md")).toBeNull();
+  });
+
+  it("patchNote replaces a unique anchor", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "hello TODO world");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "TODO", new_str: "DONE" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.path).toBe("n.md");
+      expect(r.value.count).toBe(1);
+      expect(r.value.content).toBe("hello DONE world");
+    }
+    expect(await c.get("n.md")).toBe("hello DONE world");
+  });
+
+  it("patchNote returns not_found when the note does not exist", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await patchNote(c, cfg, { path: "missing.md", old_str: "a", new_str: "b" });
+    expect(r).toMatchObject({ ok: false, reason: "not_found", path: "missing.md" });
+  });
+
+  it("patchNote returns anchor_not_found when old_str is missing", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "hello world");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "TODO", new_str: "DONE" });
+    expect(r).toMatchObject({ ok: false, reason: "anchor_not_found", path: "n.md" });
+  });
+
+  it("patchNote returns ambiguous when old_str is non-unique without replace_all", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "TODO TODO");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "TODO", new_str: "DONE" });
+    expect(r).toEqual({ ok: false, reason: "ambiguous", path: "n.md", count: 2 });
+  });
+
+  it("patchNote replaces every occurrence when replace_all is true", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "TODO TODO");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "TODO", new_str: "DONE", replace_all: true });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.count).toBe(2);
+    expect(await c.get("n.md")).toBe("DONE DONE");
+  });
+
+  it("patchNote returns no_op when old_str equals new_str", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "anchor");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "anchor", new_str: "anchor" });
+    expect(r).toEqual({ ok: false, reason: "no_op", path: "n.md" });
+  });
+
+  it("patchNote rejects an empty old_str instead of rewriting the whole note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "hello world");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "", new_str: "X" });
+    expect(r).toEqual({ ok: false, reason: "empty_old_str", path: "n.md" });
+    // The note must be untouched.
+    expect(await c.get("n.md")).toBe("hello world");
+  });
+
+  // Regression: String.prototype.replace(string, string) interprets $`, $', $&,
+  // $$, and $n in the replacement. We use parts.join instead so new_str is
+  // written verbatim. Without this guard a new_str like "`$\``" (regex
+  // literal followed by a backtick) splices the whole pre-match body into the
+  // file — observed corrupting a note in production with three self-copies.
+  it("patchNote writes new_str literally even when it contains $ metacharacters (single replace)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "before [ANCHOR] after");
+    const r = await patchNote(c, cfg, {
+      path: "n.md",
+      old_str: "[ANCHOR]",
+      new_str: "$` $' $& $$ $1",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.content).toBe("before $` $' $& $$ $1 after");
+    expect(await c.get("n.md")).toBe("before $` $' $& $$ $1 after");
+  });
+
+  it("patchNote writes new_str literally even when it contains $ metacharacters (replace_all)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "X X");
+    const r = await patchNote(c, cfg, {
+      path: "n.md",
+      old_str: "X",
+      new_str: "$`",
+      replace_all: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(await c.get("n.md")).toBe("$` $`");
+  });
+});
+
+describe("moveNote", () => {
+  beforeEach(reset);
+
+  async function seed(c: R2Client, store: MemoryStore, files: Record<string, string>) {
+    for (const [path, body] of Object.entries(files)) {
+      const etag = await c.put(path, body);
+      store.upsert({ path, etag, body, tags: extractTags(body), wikilinks: extractWikilinks(body) });
+    }
+  }
+
+  it("moves a note with zero inbound wikilinks", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "Old/src.md": "body" });
+
+    const r = await moveNote(c, cfg, index, { from_path: "Old/src.md", to_path: "New/dst.md" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.from).toBe("Old/src.md");
+      expect(r.value.to).toBe("New/dst.md");
+      expect(r.value.links_updated).toBe(0);
+      expect(r.value.notes_modified).toEqual([]);
+    }
+    expect(await c.get("Old/src.md")).toBeNull();
+    expect(await c.get("New/dst.md")).toBe("body");
+  });
+
+  it("rewrites a plain wikilink referrer", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, {
+      "src.md": "moved body",
+      "ref.md": "see [[src]] for details",
+    });
+
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("see [[dst]] for details");
+  });
+
+  it("preserves aliases on rewritten links", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "x", "ref.md": "[[src|Display Text]]" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "Folder/dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("[[Folder/dst|Display Text]]");
+  });
+
+  it("preserves heading anchors", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "x", "ref.md": "[[src#Section A]]" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("[[dst#Section A]]");
+  });
+
+  it("preserves block references", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "x", "ref.md": "see [[src#^abc123]]" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("see [[dst#^abc123]]");
+  });
+
+  it("preserves embed markers", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "x", "ref.md": "![[src]]" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("![[dst]]");
+  });
+
+  it("rewrites full-path references", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "Folder/src.md": "x", "ref.md": "[[Folder/src]]" });
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Folder/src.md",
+      to_path: "Other/dst.md",
+    });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("[[Other/dst]]");
+  });
+
+  it("rewrites bare-basename AND full-path forms across multiple files", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, {
+      "Folder/src.md": "x",
+      "ref-bare.md": "[[src]]",
+      "ref-full.md": "[[Folder/src]]",
+    });
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Folder/src.md",
+      to_path: "New/dst.md",
+    });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref-bare.md")).toBe("[[New/dst]]");
+    expect(await c.get("ref-full.md")).toBe("[[New/dst]]");
+  });
+
+  it("rewrites self-references inside the moved file", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "I am [[src]] referencing myself" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("dst.md")).toBe("I am [[dst]] referencing myself");
+  });
+
+  it("does NOT rewrite wikilinks inside fenced code blocks", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    const body = "use [[src]] live\n```\n[[src]] in code\n```\nend";
+    await seed(c, store, { "src.md": "x", "ref.md": body });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("use [[dst]] live\n```\n[[src]] in code\n```\nend");
+  });
+
+  it("does NOT rewrite wikilinks inside inline code spans", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "x", "ref.md": "`[[src]]` literal vs [[src]] live" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("ref.md")).toBe("`[[src]]` literal vs [[dst]] live");
+  });
+
+  it("fails with reason='exists' when the destination already exists", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "a", "dst.md": "b", "ref.md": "[[src]]" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r).toEqual({ ok: false, reason: "exists", to_path: "dst.md" });
+    // No partial state: source still present, referrer untouched.
+    expect(await c.get("src.md")).toBe("a");
+    expect(await c.get("dst.md")).toBe("b");
+    expect(await c.get("ref.md")).toBe("[[src]]");
+  });
+
+  it("fails with reason='not_found' when the source is missing", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { index } = newIndex(c);
+    const r = await moveNote(c, cfg, index, { from_path: "missing.md", to_path: "dst.md" });
+    expect(r).toEqual({ ok: false, reason: "not_found", from_path: "missing.md" });
+  });
+
+  it("fails with reason='same_path' when from_path equals to_path", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "x" });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "src.md" });
+    expect(r).toEqual({ ok: false, reason: "same_path", path: "src.md" });
+  });
+
+  it("moves into a new directory key", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, { "src.md": "body" });
+    const r = await moveNote(c, cfg, index, {
+      from_path: "src.md",
+      to_path: "Deeply/Nested/dst.md",
+    });
+    expect(r.ok).toBe(true);
+    expect(await c.get("Deeply/Nested/dst.md")).toBe("body");
+  });
+
+  it("cross-directory move: bare-basename refs untouched (still resolve), full-path refs updated", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, {
+      "OldFolder/src.md": "x",
+      "ref-bare.md": "see [[src]]",
+      "ref-full.md": "see [[OldFolder/src]]",
+    });
+    const r = await moveNote(c, cfg, index, {
+      from_path: "OldFolder/src.md",
+      to_path: "NewFolder/src.md",
+    });
+    expect(r.ok).toBe(true);
+    // Bare basename ref gets rewritten to the new full path (always-correct fallback,
+    // since we can't cheaply prove basename is still unique).
+    expect(await c.get("ref-bare.md")).toBe("see [[NewFolder/src]]");
+    expect(await c.get("ref-full.md")).toBe("see [[NewFolder/src]]");
+  });
+
+  it("preserves CRLF line endings across move and rewrite", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, {
+      "src.md": "moved\r\nbody\r\n",
+      "ref.md": "alpha\r\nsee [[src]]\r\nomega\r\n",
+    });
+    const r = await moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" });
+    expect(r.ok).toBe(true);
+    expect(await c.get("dst.md")).toBe("moved\r\nbody\r\n");
+    expect(await c.get("ref.md")).toBe("alpha\r\nsee [[dst]]\r\nomega\r\n");
+  });
+
+  it("rolls back when a mid-operation put fails", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, store, {
+      "src.md": "moved body",
+      "ref-a.md": "[[src]] one",
+      "ref-b.md": "[[src]] two",
+    });
+
+    // Patch put() to throw on the 3rd call (after the dest write + first referrer rewrite).
+    const realPut = c.put.bind(c);
+    let calls = 0;
+    c.put = async (path: string, body: string) => {
+      calls++;
+      if (calls === 3) throw new Error("simulated failure");
+      return realPut(path, body);
+    };
+
+    await expect(
+      moveNote(c, cfg, index, { from_path: "src.md", to_path: "dst.md" }),
+    ).rejects.toThrow("simulated failure");
+
+    // Restore put so we can verify state.
+    c.put = realPut;
+    expect(await c.get("src.md")).toBe("moved body");
+    expect(await c.get("dst.md")).toBeNull();
+    // The referrer that was rewritten before the failure should have been rolled back.
+    expect(await c.get("ref-a.md")).toBe("[[src]] one");
+    expect(await c.get("ref-b.md")).toBe("[[src]] two");
+  });
+});
+
+describe("moveNote attachment co-move", () => {
+  beforeEach(reset);
+
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  async function seedNote(c: R2Client, store: MemoryStore, path: string, body: string) {
+    const etag = await c.put(path, body);
+    store.upsert({ path, etag, body, tags: extractTags(body), wikilinks: extractWikilinks(body) });
+  }
+
+  it("co-moves a uniquely-embedded attachment and keeps the relative embed", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "see ![[files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.attachments_moved).toEqual([
+        { from: "Projects/files/img.png", to: "Archive/files/img.png" },
+      ]);
+      // Relative embed form is unchanged, so no rewrite was needed.
+      expect(r.value.moved.content).toBe("see ![[files/img.png]]");
+    }
+    expect(await c.getBinary("Projects/files/img.png")).toBeNull();
+    expect(await c.getBinary("Archive/files/img.png")).not.toBeNull();
+  });
+
+  it("rolls back the attachment co-move (keeps old bytes, removes new copy) when a note write fails", async () => {
+    // The irreversible old-attachment delete must not run before the note
+    // commit succeeds. Force the referrer write to fail after the attachment was
+    // copied; the rollback must leave the OLD attachment bytes in place (the
+    // restored source note still points at them) and remove the NEW copy.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "see ![[files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+    await seedNote(c, store, "Ref.md", "[[Projects/Plan]]");
+
+    const realPut = c.put.bind(c);
+    c.put = async (path: string, body: string) => {
+      if (path === "Ref.md") throw new Error("simulated failure");
+      return realPut(path, body);
+    };
+
+    await expect(
+      moveNote(c, cfg, index, { from_path: "Projects/Plan.md", to_path: "Archive/Plan.md" }),
+    ).rejects.toThrow("simulated failure");
+
+    c.put = realPut;
+    // Notes restored to pre-move state.
+    expect(await c.get("Projects/Plan.md")).toBe("see ![[files/img.png]]");
+    expect(await c.get("Archive/Plan.md")).toBeNull();
+    expect(await c.get("Ref.md")).toBe("[[Projects/Plan]]");
+    // Attachment: old bytes kept (the restored note points at them), new copy gone.
+    expect(await c.getBinary("Projects/files/img.png")).not.toBeNull();
+    expect(await c.getBinary("Archive/files/img.png")).toBeNull();
+  });
+
+  it("rewrites a vault-rooted embed when the attachment co-moves", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "see ![[Projects/files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.attachments_moved).toEqual([
+        { from: "Projects/files/img.png", to: "Archive/files/img.png" },
+      ]);
+      expect(r.value.moved.content).toBe("see ![[files/img.png]]");
+    }
+    expect(await c.getBinary("Archive/files/img.png")).not.toBeNull();
+  });
+
+  it("leaves a shared attachment in place", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "![[files/img.png]]");
+    await seedNote(c, store, "Other.md", "also ![[Projects/files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.attachments_moved).toEqual([]);
+    // Attachment stays put because another note still references it.
+    expect(await c.getBinary("Projects/files/img.png")).not.toBeNull();
+    expect(await c.getBinary("Archive/files/img.png")).toBeNull();
+  });
+
+  it("never touches attachments when ATTACHMENTS_MOVE_WITH_NOTE=never", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const noMove = makeCfg({ attachmentsMoveWithNote: "never" });
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "![[files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, noMove, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.attachments_moved).toEqual([]);
+    expect(await c.getBinary("Projects/files/img.png")).not.toBeNull();
+  });
+});
+
+describe("metadata tools", () => {
+  beforeEach(reset);
+
+  it("parseFrontmatter returns ok with YAML data and a null permalink when disabled", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\ntitle: T\n---\nbody");
+    const r = await parseFrontmatter(c, cfg, { path: "n.md" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({ frontmatter: { title: "T" }, permalink: null });
+      expect(typeof r.value.etag).toBe("string");
+    }
+  });
+
+  it("parseFrontmatter returns not_found for a missing note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await parseFrontmatter(c, cfg, { path: "missing.md" });
+    expect(r).toEqual({ ok: false, reason: "not_found", path: "missing.md" });
+  });
+});
+
+describe("permalink integration", () => {
+  beforeEach(reset);
+
+  const ID = "ABCdefGHIjkl_MNO-1234"; // 21-char URL-safe alphabet, valid nanoid shape.
+
+  it("readNote returns the id-based permalink when configured and the note has an id", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("Knowledge/foo.md", `---\nid: ${ID}\n---\nbody`);
+    const r = await readNote(c, cfgWithPermalink, { path: "Knowledge/foo.md" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toBe(`https://o.example.test/n/${ID}?f=foo`);
+  });
+
+  it("readNote falls back to /p/?path= when the note has no id", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("Knowledge/foo.md", "no frontmatter, no id");
+    const r = await readNote(c, cfgWithPermalink, { path: "Knowledge/foo.md" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toBe("https://o.example.test/p/?path=Knowledge%2Ffoo.md");
+  });
+
+  it("createNote returns a permalink keyed on the freshly-minted id", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    const r = await createNote(c, cfgWithPermalink, {
+      path: "n.md",
+      content: "hello",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toMatch(
+      /^https:\/\/o\.example\.test\/n\/[A-Za-z0-9_-]{21}\?f=n$/,
+    );
+  });
+
+  it("replaceNote keeps permalink stable when caller's content carries a different id", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("n.md", `---\nid: ${ID}\n---\noriginal`);
+    const intruderId = "ZZZZZZZZZZZZZZZZZZZZZ";
+    const r = await replaceNote(c, cfgWithPermalink, {
+      path: "n.md",
+      content: `---\nid: ${intruderId}\n---\nnew body`,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toBe(`https://o.example.test/n/${ID}?f=n`);
+  });
+
+  it("replaceBody preserves the permalink (frontmatter untouched)", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("n.md", `---\nid: ${ID}\n---\noriginal`);
+    const r = await replaceBody(c, cfgWithPermalink, { path: "n.md", body: "new" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toBe(`https://o.example.test/n/${ID}?f=n`);
+  });
+
+  it("patchNote preserves the permalink when the patch does not touch the id line", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("n.md", `---\nid: ${ID}\n---\nbefore`);
+    const r = await patchNote(c, cfgWithPermalink, {
+      path: "n.md",
+      old_str: "before",
+      new_str: "after",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toBe(`https://o.example.test/n/${ID}?f=n`);
+  });
+
+  it("patchNote that strips the id line falls back to the path-based permalink", async () => {
+    // Documents the patch_note id-line edge case from CLAUDE.md.
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("n.md", `---\nid: ${ID}\n---\nbody`);
+    const r = await patchNote(c, cfgWithPermalink, {
+      path: "n.md",
+      old_str: `---\nid: ${ID}\n---\n`,
+      new_str: "",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.permalink).toBe("https://o.example.test/p/?path=n.md");
+  });
+
+  it("parseFrontmatter returns permalink alongside frontmatter when configured", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("n.md", `---\nid: ${ID}\ntitle: T\n---\nbody`);
+    const r = await parseFrontmatter(c, cfgWithPermalink, { path: "n.md" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({
+        frontmatter: { id: ID, title: "T" },
+        permalink: `https://o.example.test/n/${ID}?f=n`,
+      });
+      expect(typeof r.value.etag).toBe("string");
+    }
+  });
+
+  it("generatePermalink returns kind='id' when an id is present", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("n.md", `---\nid: ${ID}\n---\nbody`);
+    const r = await generatePermalink(c, cfgWithPermalink, { path: "n.md" });
+    expect(r).toEqual({
+      ok: true,
+      value: {
+        path: "n.md",
+        permalink: `https://o.example.test/n/${ID}?f=n`,
+        kind: "id",
+      },
+    });
+  });
+
+  it("generatePermalink returns kind='path' when no id is present", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    await c.put("Notes/foo.md", "no id");
+    const r = await generatePermalink(c, cfgWithPermalink, { path: "Notes/foo.md" });
+    expect(r).toEqual({
+      ok: true,
+      value: {
+        path: "Notes/foo.md",
+        permalink: "https://o.example.test/p/?path=Notes%2Ffoo.md",
+        kind: "path",
+      },
+    });
+  });
+
+  it("generatePermalink returns permalink_disabled when base URL is unset", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", `---\nid: ${ID}\n---\nbody`);
+    const r = await generatePermalink(c, cfg, { path: "n.md" });
+    expect(r).toEqual({ ok: false, reason: "permalink_disabled", path: "n.md" });
+  });
+
+  it("generatePermalink returns not_found for a missing note", async () => {
+    const c = new R2Client(env.VAULT, cfgWithPermalink);
+    const r = await generatePermalink(c, cfgWithPermalink, { path: "missing.md" });
+    expect(r).toEqual({ ok: false, reason: "not_found", path: "missing.md" });
+  });
+});
+
+describe("periodic-note tools", () => {
+  beforeEach(reset);
+
+  it("getOrCreatePeriodicNote (daily) creates a note at the templated path with an id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const res = await getOrCreatePeriodicNote(c, cfg, { period: "daily", date: "2026-05-11" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.path).toBe("Daily Notes/2026-05-11.md");
+    expect(res.value.created).toBe(true);
+    expect(typeof res.value.etag).toBe("string");
+    expect(res.value.id).toMatch(NANOID_RE);
+    expect(res.value.content).toContain("# 2026-05-11");
+
+    const again = await getOrCreatePeriodicNote(c, cfg, { period: "daily", date: "2026-05-11" });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.value.created).toBe(false);
+    expect(again.value.etag).toBeNull();
+    expect(again.value.content).toBeNull();
+    // Existing note's id is read back, not re-minted.
+    expect(again.value.id).toBe(res.value.id);
+  });
+
+  it("getOrCreatePeriodicNote buckets the anchor into each cadence's path", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    // 2026-05-11 is a Monday in ISO week 20.
+    const weekly = await getOrCreatePeriodicNote(c, cfg, { period: "weekly", date: "2026-05-11" });
+    expect(weekly.ok && weekly.value.path).toBe("Weekly Notes/2026-W20.md");
+    const monthly = await getOrCreatePeriodicNote(c, cfg, { period: "monthly", date: "2026-05-11" });
+    expect(monthly.ok && monthly.value.path).toBe("Monthly Notes/2026-05.md");
+    const quarterly = await getOrCreatePeriodicNote(c, cfg, {
+      period: "quarterly",
+      date: "2026-05-11",
+    });
+    expect(quarterly.ok && quarterly.value.path).toBe("Quarterly Notes/2026-Q2.md");
+    const yearly = await getOrCreatePeriodicNote(c, cfg, { period: "yearly", date: "2026-05-11" });
+    expect(yearly.ok && yearly.value.path).toBe("Yearly Notes/2026.md");
+    expect(weekly.ok && weekly.value.content).toContain("# 2026-W20");
+  });
+
+  it("getOrCreatePeriodicNote returns period_not_configured when the cadence has no template", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const noWeekly = makeCfg({
+      periodicNoteTemplates: { ...cfg.periodicNoteTemplates, weekly: null },
+    });
+    const res = await getOrCreatePeriodicNote(c, noWeekly, { period: "weekly" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("period_not_configured");
+    expect(res.period).toBe("weekly");
+  });
+
+  it("appendToPeriodicNote appends with a newline boundary", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await appendToPeriodicNote(c, cfg, { period: "daily", date: "2026-05-11", content: "line1" });
+    await appendToPeriodicNote(c, cfg, { period: "daily", date: "2026-05-11", content: "line2" });
+    const body = await c.get("Daily Notes/2026-05-11.md");
+    expect(body).toBe("line1\nline2\n");
+  });
+
+  it("appendToPeriodicNote returns period_not_configured for an unset cadence", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const noMonthly = makeCfg({
+      periodicNoteTemplates: { ...cfg.periodicNoteTemplates, monthly: null },
+    });
+    const res = await appendToPeriodicNote(c, noMonthly, { period: "monthly", content: "x" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("period_not_configured");
+  });
+});
+
+describe("readNote returns parsed frontmatter", () => {
+  beforeEach(reset);
+
+  it("includes the parsed frontmatter object alongside the raw content", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\nstatus: done\ntags: [a, b]\n---\nHello body\n");
+    const res = await readNote(c, cfg, { path: "n.md" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Raw content unchanged (block[0] contract).
+    expect(res.value.content).toBe("---\nid: x\nstatus: done\ntags: [a, b]\n---\nHello body\n");
+    expect(res.value.frontmatter).toEqual({ id: "x", status: "done", tags: ["a", "b"] });
+  });
+
+  it("returns an empty frontmatter object for a note without frontmatter", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "Just a body\n");
+    const res = await readNote(c, cfg, { path: "n.md" });
+    expect(res.ok && res.value.frontmatter).toEqual({});
+  });
+
+  it("does not throw on malformed YAML frontmatter — body still readable, frontmatter {}", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    // Unterminated double-quote: invalid YAML that js-yaml/gray-matter rejects.
+    await c.put("n.md", '---\nk: "unterminated\n---\nThe body\n');
+    const res = await readNote(c, cfg, { path: "n.md" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.content).toBe('---\nk: "unterminated\n---\nThe body\n');
+    expect(res.value.frontmatter).toEqual({});
+  });
+});
+
+describe("note-write tools return the resulting id", () => {
+  beforeEach(reset);
+
+  it("createNote returns the minted id (no id supplied)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const res = await createNote(c, cfg, { path: "n.md", content: "Body\n" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.id).toMatch(NANOID_RE);
+    expect(extractIdFromFrontmatter(res.value.content)).toBe(res.value.id);
+  });
+
+  it("createNote returns a caller-supplied id verbatim", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const res = await createNote(c, cfg, {
+      path: "n.md",
+      content: "---\nid: custom-123\n---\nBody\n",
+    });
+    expect(res.ok && res.value.id).toBe("custom-123");
+  });
+
+  it("replaceNote returns the preserved id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keep\n---\nOld\n");
+    const res = await replaceNote(c, cfg, { path: "n.md", content: "New body\n" });
+    expect(res.ok && res.value.id).toBe("keep");
+  });
+
+  it("replaceBody returns the existing id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keep\n---\nOld\n");
+    const res = await replaceBody(c, cfg, { path: "n.md", body: "New\n" });
+    expect(res.ok && res.value.id).toBe("keep");
+  });
+
+  it("patchNote returns the note's id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keep\n---\nhello world\n");
+    const res = await patchNote(c, cfg, { path: "n.md", old_str: "world", new_str: "there" });
+    expect(res.ok && res.value.id).toBe("keep");
+  });
+});
+
+describe("patchFrontmatter", () => {
+  beforeEach(reset);
+
+  it("sets a new field and overwrites an existing one, preserving the id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keepme\nstatus: draft\n---\nBody\n");
+    const res = await patchFrontmatter(c, cfg, {
+      path: "n.md",
+      set: { status: "done", priority: 2 },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.id).toBe("keepme");
+    expect(res.value.changed_keys).toEqual(["status", "priority"]);
+    const body = await c.get("n.md");
+    expect(body).toBe("---\nid: keepme\nstatus: done\npriority: 2\n---\nBody\n");
+  });
+
+  it("unsets a field", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\nstatus: done\n---\nBody\n");
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", unset: ["status"] });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.removed_keys).toEqual(["status"]);
+    expect(await c.get("n.md")).toBe("---\nid: x\n---\nBody\n");
+  });
+
+  it("mints an id when the note has none and reports it", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "Just a body\n");
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", set: { status: "new" } });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.id).toMatch(NANOID_RE);
+    const body = await c.get("n.md");
+    expect(body).toContain("status: new");
+    expect(extractIdFromFrontmatter(body ?? "")).toBe(res.value.id);
+  });
+
+  it("refuses to set or unset the id field", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\n---\nB\n");
+    const setRes = await patchFrontmatter(c, cfg, { path: "n.md", set: { id: "evil" } });
+    expect(setRes.ok).toBe(false);
+    if (!setRes.ok) expect(setRes.reason).toBe("id_immutable");
+    const unsetRes = await patchFrontmatter(c, cfg, { path: "n.md", unset: ["id"] });
+    expect(unsetRes.ok).toBe(false);
+    if (!unsetRes.ok) expect(unsetRes.reason).toBe("id_immutable");
+    // Note untouched.
+    expect(await c.get("n.md")).toBe("---\nid: x\n---\nB\n");
+  });
+
+  it("refuses a block-style value without modifying the note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const original = "---\nid: x\ntags:\n  - a\n  - b\n---\nB\n";
+    await c.put("n.md", original);
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", set: { tags: ["c"] } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe("unsupported_block_value");
+      expect(res.key).toBe("tags");
+    }
+    expect(await c.get("n.md")).toBe(original);
+  });
+
+  it("returns malformed_frontmatter (not a throw) when the note's frontmatter is unterminated", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\nstatus: a\nBody with no closing fence\n");
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", set: { status: "b" } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("malformed_frontmatter");
+  });
+
+  it("returns not_found for a missing note and no_op for an empty patch", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const missing = await patchFrontmatter(c, cfg, { path: "nope.md", set: { a: 1 } });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+    await c.put("n.md", "---\nid: x\n---\nB\n");
+    const empty = await patchFrontmatter(c, cfg, { path: "n.md" });
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.reason).toBe("no_op");
+  });
+});
+
+describe("attachment tools", () => {
+  beforeEach(reset);
+
+  const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const PNG_B64 = btoa(String.fromCharCode(...PNG_BYTES));
+  const PDF_BYTES = [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]; // %PDF-1.4
+  const seed = (client: R2Client, path: string, bytes: number[], type: string) =>
+    client.putBinary(path, new Uint8Array(bytes), type);
+
+  it("readAttachment returns an image-flagged result for image MIME", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    const r = await readAttachment(c, cfg, { path: "files/a.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.is_image).toBe(true);
+      expect(r.value.content_type).toBe("image/png");
+      expect(r.value.data_base64).toBe(PNG_B64);
+    }
+  });
+
+  it("readAttachment returns a non-image result for PDF", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await seed(c, "files/doc.pdf", PDF_BYTES, "application/pdf");
+    const r = await readAttachment(c, cfg, { path: "files/doc.pdf" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.is_image).toBe(false);
+      expect(r.value.content_type).toBe("application/pdf");
+    }
+  });
+
+  it("readAttachment 404s for a missing path and blocks disallowed extensions", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const missing = await readAttachment(c, cfg, { path: "files/none.png" });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+
+    const blocked = await readAttachment(c, cfg, { path: "secrets.env" });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toBe("disallowed_extension");
+  });
+
+  it("headAttachment returns metadata without bytes", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    const r = await headAttachment(c, cfg, { path: "files/a.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.size).toBe(PNG_BYTES.length);
+      expect(r.value.content_type).toBe("image/png");
+      expect(typeof r.value.uploaded).toBe("string");
+    }
+    const missing = await headAttachment(c, cfg, { path: "files/none.png" });
+    expect(missing.ok).toBe(false);
+  });
+
+  it("listAttachments enumerates non-md objects and scopes by prefix", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("note.md", "# hi");
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    await seed(c, "Other/b.png", PNG_BYTES, "image/png");
+
+    const all = await listAttachments(c, cfg, {});
+    expect(all.items.map((i) => i.path).sort()).toEqual(["Other/b.png", "files/a.png"]);
+
+    const scoped = await listAttachments(c, cfg, { prefix: "files/" });
+    expect(scoped.items.map((i) => i.path)).toEqual(["files/a.png"]);
+  });
+
+  it("moveAttachment relocates bytes server-side", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { index } = newIndex(c);
+    await seed(c, "Inbox/a.png", PNG_BYTES, "image/png");
+    const r = await moveAttachment(c, cfg, index, { from_path: "Inbox/a.png", to_path: "Projects/files/a.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.to).toBe("Projects/files/a.png");
+      expect(r.value.embed_markdown).toBe("![[Projects/files/a.png]]");
+      expect(r.value.content_type).toBe("image/png");
+      expect(r.value.notes_modified).toEqual([]); // not embedded anywhere
+    }
+    expect(await c.getBinary("Inbox/a.png")).toBeNull();
+    expect(await c.getBinary("Projects/files/a.png")).not.toBeNull();
+  });
+
+  it("moveAttachment won't clobber without overwrite, and reports same_path/not_found", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { index } = newIndex(c);
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    await seed(c, "files/b.png", PNG_BYTES, "image/png");
+
+    const clobber = await moveAttachment(c, cfg, index, { from_path: "files/a.png", to_path: "files/b.png" });
+    expect(clobber.ok).toBe(false);
+    if (!clobber.ok) expect(clobber.reason).toBe("exists");
+
+    const overwrite = await moveAttachment(c, cfg, index, { from_path: "files/a.png", to_path: "files/b.png", overwrite: true });
+    expect(overwrite.ok).toBe(true);
+
+    expect((await moveAttachment(c, cfg, index, { from_path: "x.png", to_path: "x.png" })).ok).toBe(false);
+    const missing = await moveAttachment(c, cfg, index, { from_path: "files/none.png", to_path: "files/c.png" });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+  });
+
+  it("moveAttachment refuses to move a non-allowlisted path (e.g. a note)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { index } = newIndex(c);
+    const r = await moveAttachment(c, cfg, index, { from_path: "Note.md", to_path: "Other.md" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("disallowed_extension");
+  });
+
+  it("moveAttachment rewrites embeds in every referring note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const seedNote = async (path: string, body: string) => {
+      const etag = await c.put(path, body);
+      store.upsert({ path, etag, body, tags: [], wikilinks: extractWikilinks(body) });
+    };
+    await seedNote("A.md", "see ![[files/img.png]] here");
+    await seedNote("Sub/B.md", "ref ![[files/img.png]]");
+
+    const r = await moveAttachment(c, cfg, index, { from_path: "files/img.png", to_path: "Archive/img.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified.map((n) => n.path).sort()).toEqual(["A.md", "Sub/B.md"]);
+    }
+    expect(await c.get("A.md")).toBe("see ![[Archive/img.png]] here");
+    expect(await c.get("Sub/B.md")).toBe("ref ![[Archive/img.png]]");
+  });
+
+  it("moveAttachment rewrites the embed when the file moves under the referring note's folder", async () => {
+    // Regression: moving a file INTO a subtree of the referring note's own
+    // folder used to no-op the rewrite. `relativeForEmbed(to_path, note)`
+    // strips the note's folder prefix, collapsing the new target onto the
+    // existing embed string, so the `oldForm === newRel` guard skipped it and
+    // the note was left pointing at the old (now-empty) location.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "see ![[files/img.png]] here";
+    const etag = await c.put("Knowledge/Humor/N.md", body);
+    store.upsert({
+      path: "Knowledge/Humor/N.md",
+      etag,
+      body,
+      tags: [],
+      wikilinks: extractWikilinks(body),
+    });
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/img.png",
+      to_path: "Knowledge/Humor/files/img.png",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified.map((n) => n.path)).toEqual(["Knowledge/Humor/N.md"]);
+    }
+    // The embed must point unambiguously at the new location, not the old root path.
+    expect(await c.get("Knowledge/Humor/N.md")).toBe(
+      "see ![[Knowledge/Humor/files/img.png]] here",
+    );
+  });
+
+  it("moveAttachment rolls back with no partial commit when an embed rewrite fails", async () => {
+    // Defect B: the irreversible byte-move must NOT commit before the embed
+    // rewrite. Force a c.put failure on a referrer that sorts AFTER an already-
+    // rewritten one, so the rollback must also restore the earlier note.
+    const base = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(base);
+    await seed(base, "files/img.png", PNG_BYTES, "image/png");
+    const seedNote = async (path: string, body: string) => {
+      const etag = await base.put(path, body);
+      store.upsert({ path, etag, body, tags: [], wikilinks: extractWikilinks(body) });
+    };
+    await seedNote("A.md", "see ![[files/img.png]] here");
+    await seedNote("Z.md", "ref ![[files/img.png]]");
+
+    // findReferrers returns sorted paths, so A.md is rewritten first, then Z.md
+    // throws — exercising both the byte rollback and the already-rewritten-note
+    // restore.
+    class FailingPut extends R2Client {
+      async put(path: string, content: string) {
+        if (path === "Z.md") throw new Error("simulated R2 put failure");
+        return super.put(path, content);
+      }
+    }
+    const c = new FailingPut(env.VAULT, cfg);
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/img.png",
+      to_path: "Archive/img.png",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("embed_rewrite_failed");
+
+    // Nothing committed: source present, destination cleaned up, both notes intact.
+    expect(await base.getBinary("files/img.png")).not.toBeNull();
+    expect(await base.getBinary("Archive/img.png")).toBeNull();
+    expect(await base.get("A.md")).toBe("see ![[files/img.png]] here");
+    expect(await base.get("Z.md")).toBe("ref ![[files/img.png]]");
+  });
+
+  it("moveAttachment rollback restores clobbered destination bytes when overwriting", async () => {
+    // overwrite:true clobbers a pre-existing destination. If a later embed
+    // rewrite fails, the rollback must RESTORE the original destination bytes,
+    // not just delete the copy (which would lose the clobbered file's data).
+    const base = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(base);
+    await seed(base, "files/a.png", PNG_BYTES, "image/png");
+    await seed(base, "files/b.png", PDF_BYTES, "application/pdf"); // distinct prior dest bytes
+    const body = "see ![[files/a.png]]";
+    const etag = await base.put("Ref.md", body);
+    store.upsert({ path: "Ref.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    class FailingPut extends R2Client {
+      async put(path: string, content: string) {
+        if (path === "Ref.md") throw new Error("simulated R2 put failure");
+        return super.put(path, content);
+      }
+    }
+    const c = new FailingPut(env.VAULT, cfg);
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/a.png",
+      to_path: "files/b.png",
+      overwrite: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("embed_rewrite_failed");
+
+    // Destination restored to its ORIGINAL (PDF) bytes; source still present.
+    const dest = await base.getBinary("files/b.png");
+    expect(dest).not.toBeNull();
+    expect([...new Uint8Array(dest!.body)]).toEqual(PDF_BYTES);
+    expect(await base.getBinary("files/a.png")).not.toBeNull();
+    expect(await base.get("Ref.md")).toBe("see ![[files/a.png]]");
+  });
+
+  it("moveAttachment reports bare-filename referrers without rewriting them", async () => {
+    // A `![[img.png]]` embed (no folder) is resolved by Obsidian by name
+    // regardless of where the file lives, so it self-heals on move and is left
+    // untouched. But it genuinely references the file, so it must be reported in
+    // `referrers_unchanged` rather than silently dropped — a complete audit of
+    // what pointed at the moved file.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "see ![[img.png]] here";
+    const etag = await c.put("Projects/Plan.md", body);
+    store.upsert({ path: "Projects/Plan.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    const r = await moveAttachment(c, cfg, index, { from_path: "files/img.png", to_path: "Archive/img.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified).toEqual([]);
+      expect(r.value.referrers_unchanged).toEqual(["Projects/Plan.md"]);
+    }
+    expect(await c.get("Projects/Plan.md")).toBe(body); // byte-identical, not rewritten
+  });
+
+  it("moveAttachment does not report a same-basename embed that points at a different file", async () => {
+    // `![[Other/img.png]]` references a *different* file. The referrer query's
+    // `LIKE '%/img.png'` clause flags it as a candidate, but it neither gets
+    // rewritten nor reported — it does not reference the moved file.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "ref ![[Other/img.png]]";
+    const etag = await c.put("Note.md", body);
+    store.upsert({ path: "Note.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    const r = await moveAttachment(c, cfg, index, { from_path: "files/img.png", to_path: "Archive/img.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified).toEqual([]);
+      expect(r.value.referrers_unchanged).toEqual([]);
+    }
+    expect(await c.get("Note.md")).toBe(body);
+  });
+
+  it("moveAttachment with update_embeds=false leaves notes untouched", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "see ![[files/img.png]]";
+    const etag = await c.put("A.md", body);
+    store.upsert({ path: "A.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/img.png",
+      to_path: "Archive/img.png",
+      update_embeds: false,
+    });
+    expect(r.ok && r.value.notes_modified).toEqual([]);
+    expect(await c.get("A.md")).toBe(body);
+  });
+
+  it("deleteAttachment is idempotent and refuses non-allowlisted paths", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    const del = await deleteAttachment(c, cfg, { path: "files/a.png" });
+    expect(del.ok).toBe(true);
+    expect(await c.getBinary("files/a.png")).toBeNull();
+    // idempotent
+    expect((await deleteAttachment(c, cfg, { path: "files/a.png" })).ok).toBe(true);
+    // refuses to delete a markdown note through this tool
+    const blocked = await deleteAttachment(c, cfg, { path: "note.md" });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toBe("disallowed_extension");
+  });
+
+  // ─── upload_attachment_url (mocked fetch) ────────────────────────────────
+
+  function mockFetch(handler: (url: string) => Response | Promise<Response>): typeof fetch {
+    return ((input: Parameters<typeof fetch>[0]) =>
+      Promise.resolve(handler(typeof input === "string" ? input : String(input)))) as typeof fetch;
+  }
+  const imageResponse = () =>
+    new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { "content-type": "image/png" } });
+  // The URL-fetch path is default-closed: hosts must be allowlisted. fetchCfg opts
+  // in the example hosts these tests fetch from.
+  const fetchCfg = makeCfg({
+    attachmentFetchHostAllowlist: "cdn.example.com,assets.example.com,example.com",
+  });
+
+  it("uploadAttachmentUrl stores a fetched image (happy path)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/pic.png" },
+      mockFetch(() => imageResponse()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.path).toBe("files/pic.png");
+      expect(r.value.content_type).toBe("image/png");
+    }
+    expect(await c.getBinary("files/pic.png")).not.toBeNull();
+  });
+
+  it("uploadAttachmentUrl follows a redirect to an allowed host", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    let calls = 0;
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/redir" },
+      mockFetch((url) => {
+        calls++;
+        if (url.endsWith("/redir")) {
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://assets.example.com/pic.png" },
+          });
+        }
+        return imageResponse();
+      }),
+    );
+    expect(calls).toBe(2);
+    expect(r.ok && r.value.path).toBe("files/pic.png");
+  });
+
+  it("uploadAttachmentUrl rejects a redirect to a private IP", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/redir" },
+      mockFetch(() =>
+        new Response(null, { status: 302, headers: { location: "https://10.0.0.1/evil.png" } }),
+      ),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("disallowed_host");
+  });
+
+  it("uploadAttachmentUrl rejects an HTML response", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://example.com/page.png" },
+      mockFetch(() => new Response("<html></html>", { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("html_response");
+  });
+
+  it("uploadAttachmentUrl rejects an oversize body", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const tiny = makeCfg({ attachmentMaxBytes: 4, attachmentFetchHostAllowlist: "cdn.example.com" });
+    const r = await uploadAttachmentUrl(
+      c,
+      tiny,
+      { source_url: "https://cdn.example.com/pic.png" },
+      mockFetch(() => imageResponse()),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("too_large");
+  });
+
+  it("uploadAttachmentUrl rejects a non-200 status", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/pic.png" },
+      mockFetch(() => new Response("nope", { status: 404 })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("fetch_failed");
+  });
+
+  it("uploadAttachmentUrl rejects http and IP-literal source URLs", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const never = mockFetch(() => {
+      throw new Error("fetch should not be called");
+    });
+    const insecure = await uploadAttachmentUrl(c, cfg, { source_url: "http://cdn.example.com/a.png" }, never);
+    expect(insecure.ok).toBe(false);
+    if (!insecure.ok) expect(insecure.reason).toBe("insecure_url");
+    const ip = await uploadAttachmentUrl(c, cfg, { source_url: "https://127.0.0.1/a.png" }, never);
+    expect(ip.ok).toBe(false);
+    if (!ip.ok) expect(ip.reason).toBe("disallowed_host");
+  });
+
+  it("uploadAttachmentUrl synthesizes a filename from Content-Type when the URL has none", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/download" },
+      mockFetch(() => imageResponse()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.path).toMatch(/^files\/attachment-\d+\.png$/);
+  });
+
+  it("uploadAttachmentUrl fails when no extension can be inferred", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/download" },
+      mockFetch(() => new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { "content-type": "application/octet-stream" } })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("no_extension_inferable");
+  });
+
+  it("uploadAttachmentUrl rejects an initial host not in the allowlist (no fetch)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const never = mockFetch(() => {
+      throw new Error("fetch should not be called");
+    });
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://not-allowed.example.org/pic.png" },
+      never,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("host_not_allowed");
+  });
+
+  it("uploadAttachmentUrl rejects a redirect to a non-allowlisted host", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/redir" },
+      mockFetch(() =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://not-allowed.example.org/pic.png" },
+        }),
+      ),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("host_not_allowed");
+  });
+
+  it("uploadAttachmentUrl rejects a disallowed file type clearly (no write)", async () => {
+    // A To Do attachment of an unsupported type (e.g. an .exe) must fail with a
+    // distinct, terminal error so the orchestrator never assumes the file moved.
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/installer.exe" },
+      mockFetch(() => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("disallowed_extension");
+      expect(r.ext).toBe("exe");
+      expect(Array.isArray(r.allowed)).toBe(true);
+    }
+    // Nothing was written to the vault.
+    expect(await c.getBinary("files/installer.exe")).toBeNull();
+  });
+});
+
+describe("if_match optimistic-concurrency precondition", () => {
+  beforeEach(reset);
+
+  it("read_note surfaces the current etag, which round-trips as a valid if_match", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await createNote(c, cfg, { path: "n.md", content: "v1" });
+    const read = await readNote(c, cfg, { path: "n.md" });
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(typeof read.value.etag).toBe("string");
+    // Same etag, no concurrent change → the conditional write commits.
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "edited\n", if_match: read.value.etag });
+    expect(r.ok).toBe(true);
+  });
+
+  it("replace_body commits when if_match matches and bumps the etag", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const r = await replaceBody(c, cfg, {
+      path: "n.md",
+      body: "new body\n",
+      if_match: created.value.etag,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.etag).not.toBe(created.value.etag);
+      expect(await c.get("n.md")).toContain("new body");
+    }
+  });
+
+  it("replace_body returns precondition_failed on a stale if_match and does NOT overwrite", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const stale = created.value.etag;
+    // A concurrent writer changes the note (different content → new etag).
+    await c.put("n.md", "---\nid: keep\n---\nconcurrent winner\n");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "my body\n", if_match: stale });
+    expect(r).toMatchObject({ ok: false, reason: "precondition_failed", path: "n.md" });
+    const after = await c.get("n.md");
+    expect(after).toContain("concurrent winner");
+    expect(after).not.toContain("my body");
+  });
+
+  it("patch_note returns precondition_failed on a stale if_match (anchor still present)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "anchor here\n" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const stale = created.value.etag;
+    // Concurrent change keeps the anchor (so patch reaches the write) but bumps the etag.
+    await c.put("n.md", "---\nid: keep\n---\nanchor here plus extra\n");
+    const r = await patchNote(c, cfg, {
+      path: "n.md",
+      old_str: "anchor here",
+      new_str: "changed",
+      if_match: stale,
+    });
+    expect(r).toMatchObject({ ok: false, reason: "precondition_failed", path: "n.md" });
+    expect(await c.get("n.md")).toContain("anchor here plus extra");
+  });
+
+  it("patch_frontmatter returns precondition_failed on a stale if_match", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "---\ntitle: A\n---\nbody\n" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const stale = created.value.etag;
+    await c.put("n.md", "---\ntitle: Z\nid: keep\n---\nother body\n");
+    const r = await patchFrontmatter(c, cfg, { path: "n.md", set: { title: "B" }, if_match: stale });
+    expect(r).toMatchObject({ ok: false, reason: "precondition_failed", path: "n.md" });
+  });
+
+  it("replace_note commits when if_match matches", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const r = await replaceNote(c, cfg, {
+      path: "n.md",
+      content: "---\ntitle: New\n---\nfresh\n",
+      if_match: created.value.etag,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(await c.get("n.md")).toContain("fresh");
+  });
+
+  it("write tools are unchanged when no if_match is supplied (last-write-wins preserved)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await createNote(c, cfg, { path: "n.md", content: "v1" });
+    // No if_match → unconditional success even after a concurrent change.
+    await c.put("n.md", "---\nid: keep\n---\nsomeone else\n");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "mine wins\n" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(await c.get("n.md")).toContain("mine wins");
+  });
+});

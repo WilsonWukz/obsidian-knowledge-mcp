@@ -1,0 +1,74 @@
+// Template — copy to wrangler.jsonc via `npm run setup` after editing .env.
+// Do NOT commit wrangler.jsonc; it carries your account id, bucket name, and
+// KV namespace id.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "obsidian-mcp",
+  "account_id": "${CLOUDFLARE_ACCOUNT_ID}",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "${MCP_HOSTNAME}", "custom_domain": true }
+  ],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "${OAUTH_KV_ID}" }
+  ],
+  "r2_buckets": [
+    { "binding": "VAULT", "bucket_name": "${R2_BUCKET_NAME}" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MCP_OBJECT", "class_name": "ObsidianMCP" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] }
+  ],
+  "vars": {
+    "VAULT_PREFIX": "${VAULT_PREFIX}",
+    // Periodic-note path templates, one per cadence. Tokens: {{YYYY}} {{MM}}
+    // {{DD}} {{Q}} {{WW}} (ISO week) {{GGGG}} (ISO week-year) {{YYYY-MM-DD}}.
+    // An empty value disables that cadence (period_not_configured).
+    "DAILY_NOTE_PATH_TEMPLATE": "${DAILY_NOTE_PATH_TEMPLATE}",
+    "WEEKLY_NOTE_PATH_TEMPLATE": "${WEEKLY_NOTE_PATH_TEMPLATE}",
+    "MONTHLY_NOTE_PATH_TEMPLATE": "${MONTHLY_NOTE_PATH_TEMPLATE}",
+    "QUARTERLY_NOTE_PATH_TEMPLATE": "${QUARTERLY_NOTE_PATH_TEMPLATE}",
+    "YEARLY_NOTE_PATH_TEMPLATE": "${YEARLY_NOTE_PATH_TEMPLATE}",
+    "PERMALINK_BASE_URL": "${PERMALINK_BASE_URL}",
+    // This Worker's own public origin. Used to build tappable upload links
+    // (create_upload_link tool) and serve the /upload page. Derived from the
+    // custom-domain hostname; if you deploy to *.workers.dev, set it explicitly.
+    "SERVICE_BASE_URL": "https://${MCP_HOSTNAME}",
+    // ─── Attachment handling (safe defaults; edit here to tune) ───────────
+    // Path policy for uploaded attachments:
+    //   per_note_subfolder — <note folder>/<ATTACHMENTS_SUBFOLDER>/<file> (Obsidian-style)
+    //   vault_default      — <ATTACHMENTS_SUBFOLDER>/<file> at the vault root
+    //   caller_specified   — the AI supplies the folder; ATTACHMENTS_SUBFOLDER ignored
+    "ATTACHMENTS_PATH_MODE": "per_note_subfolder",
+    "ATTACHMENTS_SUBFOLDER": "files",
+    // CSV of allowed extensions (lowercase). To broaden further, e.g. add csv.
+    "ATTACHMENT_ALLOWED_EXTENSIONS": "png,jpg,jpeg,gif,webp,svg,pdf,docx,xlsx,pptx,zip,txt",
+    // Hard cap on upload size in bytes (post-decode / fetched body). 25 MiB.
+    "ATTACHMENT_MAX_BYTES": 26214400,
+    // unique_refs — move_note co-moves attachments uniquely embedded by the note.
+    // never       — move_note never touches attachments.
+    "ATTACHMENTS_MOVE_WITH_NOTE": "unique_refs",
+    // Timeout for the upload_attachment_url fetch path, in milliseconds.
+    "ATTACHMENT_URL_TIMEOUT_MS": 20000,
+    // CSV of hostnames upload_attachment_url may fetch from (server-side pull).
+    // DEFAULT-CLOSED: empty ⇒ NO host is fetchable and the tool always returns
+    // 'host_not_allowed'. This is deployment-specific, so it is filled from .env
+    // (ATTACHMENT_FETCH_HOST_ALLOWLIST) rather than hardcoded here. Set it to the
+    // host(s) you transfer attachments from, e.g. another MCP server you operate.
+    "ATTACHMENT_FETCH_HOST_ALLOWLIST": "${ATTACHMENT_FETCH_HOST_ALLOWLIST}",
+    // Diagnostics toggle (default "false"). When "true", ObsidianMCP.onConnect
+    // also emits a per-POST `mcp_post_connect` debug log (sessionId/connectionId/
+    // requestIds) for studying MCP client session + JSON-RPC request-id behavior.
+    // The rare `mcp_request_id_collision` WARN canary fires regardless. Leave
+    // "false" in production — it is one debug line per tool call. Set "true" (and
+    // redeploy) to re-enable the full trace; .dev.vars can set it for local dev.
+    "CONNECTION_DIAGNOSTICS": "false"
+  },
+  "observability": { "enabled": true }
+}
