@@ -3,7 +3,7 @@
 // KV namespace id.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "obsidian-mcp",
+  "name": "obsidian-knowledge-mcp",
   "account_id": "${CLOUDFLARE_ACCOUNT_ID}",
   "main": "src/index.ts",
   "compatibility_date": "2026-05-01",
@@ -39,7 +39,7 @@
     // This Worker's own public origin. Used to build tappable upload links
     // (create_upload_link tool) and serve the /upload page. Derived from the
     // custom-domain hostname; if you deploy to *.workers.dev, set it explicitly.
-    "SERVICE_BASE_URL": "https://${MCP_HOSTNAME}",
+    "SERVICE_BASE_URL": "${SERVICE_BASE_URL}",
     // ─── Attachment handling (safe defaults; edit here to tune) ───────────
     // Path policy for uploaded attachments:
     //   per_note_subfolder — <note folder>/<ATTACHMENTS_SUBFOLDER>/<file> (Obsidian-style)

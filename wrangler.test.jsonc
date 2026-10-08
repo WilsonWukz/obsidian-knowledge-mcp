@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "obsidian-knowledge-mcp-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "11111111111111111111111111111111" }
+  ],
+  "r2_buckets": [
+    { "binding": "VAULT", "bucket_name": "synthetic-test-only-vault" }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "MCP_OBJECT", "class_name": "ObsidianMCP" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] }
+  ],
+  "vars": {
+    "VAULT_PREFIX": "",
+    "DAILY_NOTE_PATH_TEMPLATE": "Daily Notes/{{YYYY-MM-DD}}.md",
+    "SERVICE_BASE_URL": "https://vault.example.test"
+  }
+}

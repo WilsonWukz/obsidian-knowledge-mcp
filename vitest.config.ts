@@ -3,7 +3,7 @@ import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-pool-workers"
 
 const poolOptions = {
   main: "test/_test-worker.ts",
-  wrangler: { configPath: "./wrangler.jsonc" },
+  wrangler: { configPath: "./wrangler.test.jsonc" },
   miniflare: {
     r2Buckets: ["VAULT"],
     kvNamespaces: ["OAUTH_KV"],
