@@ -5,6 +5,8 @@ import type { Props, ToolResult, VaultConfig } from "../types";
 import { buildVaultConfig } from "../config";
 import { VERSION } from "../version";
 import { canExposeTool } from "./tool-policy";
+import { PlanError } from "../review/plan";
+import { planNoteChanges, getNotePlan, cancelNotePlan, listNoteHistory, applyNotePlan, prepareUndo } from "../review/operations";
 import { buildNoteGraph } from "../vault/knowledge-graph";
 import { R2Client } from "../vault/r2-client";
 import { SqlStore, VaultIndex, MAX_LIKE_PATTERN_BYTES, searchPatternBytes } from "../vault/index-store";
@@ -86,6 +88,11 @@ function okText(text: string): McpResponse {
 
 function okJson(value: unknown): McpResponse {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
+}
+
+async function reviewed<T>(work: () => Promise<T>): Promise<McpResponse> {
+  try { return okJson(await work()); }
+  catch (e) { return errResponse(e instanceof PlanError ? e.code : "REVIEWED_WRITE_ERROR"); }
 }
 
 function fromToolResult<T>(r: ToolResult<T>, render: (value: T) => string): McpResponse {
@@ -200,7 +207,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
     // added to the read allowlist in tool-policy.ts.
     const originalTool = this.server.tool.bind(this.server) as (...args: unknown[]) => unknown;
     const expose = ((...args: unknown[]) => {
-      if (!canExposeTool(String(args[0]))) return undefined;
+      if (!canExposeTool(String(args[0]), String(this.env.ENABLE_REVIEWED_WRITES) === "true")) return undefined;
       return originalTool(...args);
     }) as typeof this.server.tool;
 
@@ -227,6 +234,66 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
         instrument("get_note_graph", async () =>
           okJson(await buildNoteGraph(this.vault, { start, limit, prefix })),
         ),
+    );
+
+    // Six owner-reviewed tools. The former upstream direct-write tools are
+    // still denied even when the host enables reviewed writes explicitly.
+    const reviewedPath = z.string().min(10).max(220).endsWith(".md");
+    const reviewedContent = z.string().max(96_000);
+    const yamlScalar = z.union([z.string().max(500),z.number(),z.boolean()]);
+    const yamlValue = z.union([yamlScalar,z.array(yamlScalar).max(40)]);
+    const reviewedActions = z.array(z.discriminatedUnion("action",[
+      z.object({action:z.literal("create_note"),path:reviewedPath,content:reviewedContent}),
+      z.object({action:z.literal("replace_note"),path:reviewedPath,content:reviewedContent}),
+      z.object({action:z.literal("patch_note"),path:reviewedPath,
+        old_text:z.string().min(1).max(16_000),new_text:reviewedContent}),
+      z.object({action:z.literal("patch_frontmatter"),path:reviewedPath,
+        set:z.record(z.string(),yamlValue).optional(),unset:z.array(z.string()).max(40).optional()}),
+    ])).min(1).max(5);
+    const reviewedPlanId=z.string().regex(/^[A-Za-z0-9_-]{32}$/);
+
+    expose(
+      "plan_note_changes",
+      "PREVIEW: prepare 1-5 exact note changes restricted to INSES/ with before/after Markdown. No R2 write. Owner must review in an independent password-protected browser before apply_note_changes.",
+      {actions:reviewedActions},
+      async ({actions}) => instrument("plan_note_changes",async () =>
+        reviewed(() => planNoteChanges(this.env,this.vault,actions))),
+    );
+    expose(
+      "get_note_plan",
+      "READ: return an immutable exact-diff note plan, approval status and durable operation receipts.",
+      {plan_id:reviewedPlanId},
+      async ({plan_id}) => instrument("get_note_plan",async () =>
+        reviewed(() => getNotePlan(this.env,plan_id))),
+    );
+    expose(
+      "cancel_note_plan",
+      "Cancel a pending/approved note plan without touching the vault.",
+      {plan_id:reviewedPlanId},
+      async ({plan_id}) => instrument("cancel_note_plan",async () =>
+        reviewed(() => cancelNotePlan(this.env,plan_id))),
+    );
+    expose(
+      "list_note_history",
+      "READ: list durable owner-reviewed note change history.",
+      {start:z.number().int().min(0).max(1000).optional(),limit:z.number().int().min(1).max(50).optional()},
+      async ({start,limit}) => instrument("list_note_history",async () =>
+        reviewed(() => listNoteHistory(this.env,start,limit))),
+    );
+    expose(
+      "apply_note_changes",
+      "WRITE: execute an approved exact note plan with R2 conditional writes and durable receipts. Never automatically retry uncertain, partial or interrupted operations. No multi-file atomicity.",
+      {plan_id:reviewedPlanId,digest:z.string().regex(/^[a-f0-9]{64}$/)},
+      async ({plan_id,digest}) => instrument("apply_note_changes",async () =>
+        reviewed(() => applyNotePlan(this.env,this.vault,plan_id,digest,
+          (path,content,etag)=>this.index.upsertFromContent(path,content,etag)))),
+    );
+    expose(
+      "plan_note_undo",
+      "PREVIEW: separately approved restoration of successfully applied changes to existing notes, rejecting subsequent edits. Cannot auto-delete newly created notes.",
+      {plan_id:reviewedPlanId},
+      async ({plan_id}) => instrument("plan_note_undo",async () =>
+        reviewed(() => prepareUndo(this.env,this.vault,plan_id))),
     );
 
     expose(
