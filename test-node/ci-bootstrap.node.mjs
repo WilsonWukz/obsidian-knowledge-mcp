@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { renderPrivateEnv } from "../scripts/ci-bootstrap.mjs";
-import { parseNamespaceList } from "../scripts/setup.mjs";
+import { parseNamespaceList, stripCustomDomainRoute } from "../scripts/setup.mjs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 test("Cloudflare CI bootstrap is test-vault only, excludes credentials", () => {
   const config = renderPrivateEnv({
@@ -25,4 +27,30 @@ test("KV list parser accepts Wrangler JSON plus prefix and rejects malformed ent
   assert.deepEqual(parseNamespaceList('Info\n[]\n'), []);
   assert.throws(() => parseNamespaceList("garbled"), /list returned/i);
   assert.throws(() => parseNamespaceList('[{"title":"other","id":"bad"}]'), /format/i);
+});
+
+test("workers.dev strips the whole custom domain block in the REAL Wrangler template", () => {
+  const template = readFileSync(
+    fileURLToPath(new URL("../wrangler.example.jsonc", import.meta.url)),
+    "utf8",
+  );
+  const output = stripCustomDomainRoute(template);
+  assert.doesNotMatch(output, /"routes"\s*:/);
+  assert.doesNotMatch(output, /"custom_domain"\s*:/);
+  assert.doesNotMatch(output, /\$\{MCP_HOSTNAME\}/);
+  assert.match(output, /"r2_buckets"/);
+  assert.match(output, /"durable_objects"/);
+  assert.match(output, /"kv_namespaces"/);
+  assert.doesNotThrow(() => {
+    const text = output.replace(/^\s*\/\/.*$/gm, "");
+    JSON.parse(text);
+  });
+});
+
+test("workers.dev deployment aborts when custom route template is unexpected", () => {
+  assert.throws(() => stripCustomDomainRoute("{}"), /Could not safely remove/);
+  assert.throws(
+    () => stripCustomDomainRoute('{"routes": [{"pattern": "bad.example.org", "custom_domain": true}]}'),
+    /Could not safely remove/,
+  );
 });

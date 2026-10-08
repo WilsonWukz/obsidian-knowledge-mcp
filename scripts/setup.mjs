@@ -164,6 +164,23 @@ function verifyAccount(accountId) {
   console.log(`account ${accountId}`);
 }
 
+/**
+ * Free workers.dev mode: strip the entire custom domain block before
+ * substituting environment variables. The previous regex used [^}]*,
+ * stopped at the end of a placeholder token and left an invalid hostname.
+ * Refuse deployment if the template changes.
+ */
+export function stripCustomDomainRoute(config) {
+  const route = /\s*"routes":\s*\[\s*\{\s*"pattern":\s*"\$\{MCP_HOSTNAME\}"\s*,\s*"custom_domain":\s*true\s*\}\s*\]\s*,/;
+  const result = config.replace(route, "");
+  if (result === config ||
+      /"routes"\s*:/.test(result) ||
+      /"custom_domain"\s*:/.test(result)) {
+    throw new Error("Could not safely remove Cloudflare custom domain routes");
+  }
+  return result;
+}
+
 function main() {
   if (!existsSync(ENV_PATH)) {
     console.error("error: .env not found.");
@@ -189,9 +206,9 @@ function main() {
   ensureKvNamespace(env);
 
   let out = readFileSync(TEMPLATE_PATH, "utf8");
-  // If no custom hostname is supplied, serve directly from free *.workers.dev.
+  // Fail closed if the template changes; never submit an empty custom hostname.
   if (!env.MCP_HOSTNAME) {
-    out = out.replace(/\s*"routes":\s*\[\s*\{[^}]*"custom_domain":\s*true\s*\}\s*\],/, "");
+    out = stripCustomDomainRoute(out);
   }
   out = out.replace(
     /^(\/\/[^\n]*\n)+/,
