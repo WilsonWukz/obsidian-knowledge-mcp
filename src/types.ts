@@ -6,6 +6,8 @@ import type { Period } from "./vault/periodic";
 // (used by the Worker code) and `Cloudflare.Env` (what `cloudflare:test` returns
 // in the vitest pool) so the two stay assignable.
 interface ManualBindings {
+  /** OAuth login secret configured with wrangler secret put; never a plain var. */
+  AUTH_PASSWORD: string;
   /** Secret. Long-lived bearer token for the direct HTTP upload endpoint and the
    * HMAC signing key for short-lived upload links. Set via
    * `wrangler secret put UPLOAD_TOKEN`. Empty/unset disables the endpoint. */
