@@ -1,0 +1,16 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.secrets.env
+wrangler.jsonc
+worker-configuration.d.ts
+dist/
+*.log
+.DS_Store
+.vscode/settings.json
+.claude/settings.local.json
+.claude/
+
+# Local design/spec docs (not committed)
+docs/
