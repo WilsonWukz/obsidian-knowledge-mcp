@@ -1,0 +1,107 @@
+name: Deploy Obsidian Cloud (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: "Cloudflare Account ID (32 hex chars; not a password)"
+        type: string
+        required: true
+      bucket_name:
+        description: "New private test R2 bucket (must include test)"
+        type: string
+        required: true
+        default: wilson-obsidian-mcp-test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: obsidian-cloudflare-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Provision R2 + KV and deploy read-only Worker
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      - name: Run synthetic tests before cloud mutations
+        run: |
+          set -euo pipefail
+          npm test
+          node --test test-node/*.test.mjs
+          npx wrangler types --config wrangler.test.jsonc
+          npx tsc --noEmit
+
+      - name: Validate inputs without storing secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "${{ inputs.account_id }}"
+          R2_BUCKET_NAME: "${{ inputs.bucket_name }}"
+          CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+          OBSIDIAN_MCP_AUTH_PASSWORD: "${{ secrets.OBSIDIAN_MCP_AUTH_PASSWORD }}"
+        run: node scripts/ci-bootstrap.mjs
+
+      - name: Provision or reuse private Cloudflare R2 and OAuth KV
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "${{ inputs.account_id }}"
+          CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+        run: npm run setup
+
+      - name: Deploy OAuth-protected, default-deny read-only Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "${{ inputs.account_id }}"
+          CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config wrangler.jsonc 2>&1 | tee deploy.log
+          WORKER_URL="$(grep -Eo 'https://[[:alnum:]._-]+\.workers\.dev' deploy.log | head -n 1 || true)"
+          if [ -z "$WORKER_URL" ]; then
+            echo "Worker deployed, but no workers.dev URL found in Wrangler output"
+            echo "Inspect Cloudflare Workers & Pages dashboard before assuming readiness"
+            exit 1
+          fi
+          echo "WORKER_URL=$WORKER_URL" >> "$GITHUB_ENV"
+
+      - name: Set OAuth login password as a Cloudflare Worker secret
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "${{ inputs.account_id }}"
+          CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+          MCP_LOGIN_PASSWORD: "${{ secrets.OBSIDIAN_MCP_AUTH_PASSWORD }}"
+        run: |
+          set -euo pipefail
+          test -n "$MCP_LOGIN_PASSWORD"
+          printf '%s' "$MCP_LOGIN_PASSWORD" | npx wrangler secret put AUTH_PASSWORD --config wrangler.jsonc
+
+      - name: Verify live Worker without accessing private vault data
+        env:
+          R2_BUCKET_NAME: "${{ inputs.bucket_name }}"
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 5 --retry-delay 2 --max-time 15 "$WORKER_URL/health" > health.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const body = JSON.parse(readFileSync("health.json", "utf8"));
+            if (body.ok !== true || typeof body.version !== "string")
+              throw Error("Worker health check failed");
+            console.log("Public health check successful, version:", body.version);
+          '
+          {
+            echo "### Read-only Obsidian Knowledge MCP deployed"
+            echo ""
+            echo "Worker health: $WORKER_URL/health"
+            echo ""
+            echo "MCP endpoint: $WORKER_URL/mcp"
+            echo ""
+            echo "R2 bucket: $R2_BUCKET_NAME"
+            echo ""
+            echo "**NEXT:** configure a separate synthetic test Obsidian vault with Remotely Save."
+          } >> "$GITHUB_STEP_SUMMARY"
