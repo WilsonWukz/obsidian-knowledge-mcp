@@ -165,6 +165,13 @@ export async function prepareNoteChanges(
     const original = await vault.getWithEtag(action.path);
     const before = original?.body ?? null;
     const after = proposeAfter(action,before);
+    // Never change or remove an existing note's stable Obsidian ID.
+    if (before !== null) {
+      const oldId=extractIdFromFrontmatter(before);
+      if (oldId && extractIdFromFrontmatter(after)!==oldId) {
+        throw new PlanError("STABLE_NOTE_ID_REQUIRED","Existing note id must not change");
+      }
+    }
     validateNoteYAML(after);
     if (before === after) throw new PlanError("NO_OP");
     steps.push({

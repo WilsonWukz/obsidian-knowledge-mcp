@@ -11,6 +11,8 @@ export interface PlanView {
   receipts:Receipt[];
   undo_of?:string;
   warning:string;
+  mac_sync_status:"not_verified"|"not_applicable";
+  mac_sync_instruction:string;
 }
 
 export function viewPlan(env:Env, row:StoredPlan):PlanView {
@@ -24,6 +26,8 @@ export function viewPlan(env:Env, row:StoredPlan):PlanView {
     receipts:row.receipts,
     ...(row.plan.undo_of?{undo_of:row.plan.undo_of}:{}),
     warning:row.plan.note,
+    mac_sync_status:row.status==="applied"?"not_verified":"not_applicable",
+    mac_sync_instruction:"In Mac Obsidian, run Remotely Save bidirectional sync to pull new cloud notes; check for conflicts and verify contents. Cloud write does not guarantee Mac synchronization.",
   };
 }
 export async function planNoteChanges(env:Env,vault:R2Client,actions:unknown):Promise<PlanView> {

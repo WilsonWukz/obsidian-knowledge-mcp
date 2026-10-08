@@ -71,6 +71,8 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
     await reviewInBrowser(p.plan_id);
     const applied=await applyNotePlan(e,vault(),p.plan_id,p.digest);
     expect(applied.status).toBe("applied");
+    expect(applied.mac_sync_status).toBe("not_verified");
+    expect(applied.mac_sync_instruction).toContain("bidirectional");
     expect(applied.receipts).toHaveLength(1);
     expect(applied.receipts[0].state).toBe("done");
     const current=await vault().getWithEtag(path);
