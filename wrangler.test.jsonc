@@ -18,7 +18,20 @@
   ],
   "vars": {
     "VAULT_PREFIX": "",
+    "AUTH_PASSWORD": "synthetic-test-password-never-use-in-production",
     "DAILY_NOTE_PATH_TEMPLATE": "Daily Notes/{{YYYY-MM-DD}}.md",
-    "SERVICE_BASE_URL": "https://vault.example.test"
+    "WEEKLY_NOTE_PATH_TEMPLATE": "",
+    "MONTHLY_NOTE_PATH_TEMPLATE": "",
+    "QUARTERLY_NOTE_PATH_TEMPLATE": "",
+    "YEARLY_NOTE_PATH_TEMPLATE": "",
+    "PERMALINK_BASE_URL": "",
+    "SERVICE_BASE_URL": "https://vault.example.test",
+    "ATTACHMENTS_PATH_MODE": "per_note_subfolder",
+    "ATTACHMENTS_SUBFOLDER": "files",
+    "ATTACHMENT_ALLOWED_EXTENSIONS": "png,jpg,jpeg,gif,webp,svg,pdf",
+    "ATTACHMENT_FETCH_HOST_ALLOWLIST": "",
+    "ATTACHMENT_MAX_BYTES": 26214400,
+    "ATTACHMENTS_MOVE_WITH_NOTE": "unique_refs",
+    "ATTACHMENT_URL_TIMEOUT_MS": 20000
   }
 }
