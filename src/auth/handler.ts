@@ -1,6 +1,5 @@
 import type { Props } from "../types";
 import { renderConsent } from "./consent-page";
-import { handleUpload } from "../upload/handler";
 import { signValue, timingSafeEqual, verifyValue } from "../upload/tokens";
 import { MIN_SECRET_LEN } from "../config";
 import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limit";
@@ -95,8 +94,11 @@ export default {
     // The binary upload endpoint shares this public (non-OAuth) handler. It
     // returns null for any path other than /upload, so /authorize below is
     // unaffected.
-    const upload = await handleUpload(req, env);
-    if (upload) return upload;
+    // v0.1 read-only deployment: never expose a direct HTTP upload route.
+    // Obsidian desktop may still sync normally using separate bucket credentials.
+    if (url.pathname === "/upload") {
+      return new Response("Not found", { status: 404 });
+    }
 
     if (url.pathname !== "/authorize") {
       log.debug("non_oauth_path", { method: req.method, path: url.pathname });
