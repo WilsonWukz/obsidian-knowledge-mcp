@@ -1,3 +1,81 @@
 # Obsidian Knowledge MCP
 
-Private vault data stays out of this public source repository. Cloudflare R2 and remote MCP deployment are not yet configured.
+[中文部署指引](docs/CLOUDFLARE_SETUP.zh-CN.md) · [Security](SECURITY.md)
+
+**v0.1.0 — Remote read-only research vault on Cloudflare R2.**
+
+Obsidian on Mac / iPad remains your editor. Remotely Save syncs notes to a private Cloudflare R2 bucket. A Cloudflare Worker exposes an OAuth-authenticated MCP endpoint so ChatGPT and Slack Jarvis can read and search notes even when the Mac is offline.
+
+**Deployment status:** Code and synthetic tests are committed; the real Cloudflare account, R2 bucket, Worker, Mac vault and ChatGPT/Slack connectors are **not yet configured or verified**. No real notes are present in this GitHub repository.
+
+## Architecture
+
+```text
+Mac Obsidian ↔ Remotely Save ↔ Private Cloudflare R2 bucket
+                                       ↑
+                              Cloudflare Worker
+                                 R2 + OAuth
+                                       ↑
+                              ChatGPT / Slack Jarvis
+```
+
+The Worker uses a Cloudflare Durable Object for an incremental text/search index and Cloudflare KV for OAuth. Both contain potentially private derived data.
+
+This code derives from [dszp/obsidian-mcp-cloudflare](https://github.com/dszp/obsidian-mcp-cloudflare), provided under the MIT license; see [LICENSE](LICENSE). Our v0.1 deliberately **does not expose the upstream writing tools**.
+
+## The 11 read-only tools
+
+| Tool | What it does |
+|---|---|
+| `list_notes` | Lists Markdown paths |
+| `read_note` | Reads Markdown with frontmatter and R2 ETag |
+| `search_notes` | Searches indexed text and paths |
+| `get_note_graph` | Returns a paginated link graph from explicit `[[wikilinks]]` |
+| `parse_frontmatter` | Reads YAML metadata |
+| `generate_permalink` | Gets optional Obsidian deep link |
+| `list_tags` | Aggregates note tags |
+| `list_backlinks` | Finds inbound note links |
+| `read_attachment` | Reads an allowlisted image/document attachment |
+| `head_attachment` | Reads attachment metadata |
+| `list_attachments` | Lists attachment metadata |
+
+In `get_note_graph`, destinations can be `resolved`, `ambiguous` or `missing`. Links are *observations from your notes*, **not** verified scholarly evidence or inferred conceptual claims. Pagination caps R2 I/O per call.
+
+**Read-only is enforced by a server-side default-deny tool allowlist.** No AI-initiated create, update, rename, delete, attachment upload, periodic note mutation or admin backfill is available. The direct HTTP `/upload` endpoint returns 404. Desktop Obsidian still syncs normally with its own independent S3/R2 credentials.
+
+## Getting started
+
+Start with a **separate synthetic test vault**, not your full research notes.
+
+1. Create a Cloudflare account, enable R2, and note its free-tier and payment setup.
+2. Install Node.js 22+ and clone this repository.
+3. Run `npm ci`, `npm test`; copy `.env.example` to `.env`.
+4. Add `CLOUDFLARE_ACCOUNT_ID` and a new `R2_BUCKET_NAME` to `.env`. No paid domain is required: leave `MCP_HOSTNAME` empty for a free `*.workers.dev` endpoint.
+5. Run `npx wrangler login`, `npm run setup`, `npx wrangler secret put AUTH_PASSWORD`, `npx wrangler deploy`.
+6. In a separate Obsidian vault install Remotely Save, configure its S3-compatible R2 endpoint, bucket, path-style URL and bucket-scoped token. Keep encryption **OFF** for direct R2 MCP parsing (privacy implications below).
+7. Check Worker `/health`, then connect your MCP `/mcp` endpoint in ChatGPT and Slack Jarvis. Test note lists, text search and graph retrieval.
+8. After test-vault sync works across devices and offline edits are backed up, plan any migration of your real vault.
+
+See the step-by-step [Chinese setup guide](docs/CLOUDFLARE_SETUP.zh-CN.md) and the detailed [upstream deployment reference](DEPLOYMENT.md). Upstream docs mention write tools; this derivative intentionally disables them for v0.1.
+
+## Privacy and safety
+
+Cloudflare R2 encrypts objects at rest, but Remotely Save encryption is **off** in this architecture, so the Worker can read note bodies. This is **not end-to-end encryption**. Use private buckets, restricted API tokens and OAuth, and avoid storing passwords/keys inside notes.
+
+Never upload `.env`, `.dev.vars`, `.secrets.env`, `.obsidian/plugins/remotely-save/data.json`, or your actual vault into GitHub. Keep an independent backup and test sync conflict handling. See [SECURITY.md](SECURITY.md).
+
+## Development and roadmap
+
+```bash
+npm ci
+npm test
+npx wrangler types --config wrangler.test.jsonc
+npx tsc --noEmit
+```
+
+- **v0.1**: cloud read-only MCP + note search + links/tags + safe deterministic graph + synthetic CI.
+- **v0.2**: exact-diff browser-approved notes writes, R2 conditional ETags, durable audit, conflict detection and separate rollback.
+- **v0.3**: Zotero Key → literature note linking, citations and source provenance from PDFs/Slack/Figma.
+- **v0.4**: typed note graph (paper/concept/method/dataset/question), explicit claims vs personal hypotheses, reproducible evidence trails.
+
+This project is not affiliated with Obsidian, Zotero or OpenAI and has not undergone a professional security audit.
