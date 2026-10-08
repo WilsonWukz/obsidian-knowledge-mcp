@@ -16,7 +16,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: node --test test-node/*.test.mjs
+      - run: node --test test-node/*.node.mjs
       - run: node --check scripts/setup.mjs && node --check scripts/ci-bootstrap.mjs
       - run: npx wrangler types --config wrangler.test.jsonc
       - run: npx tsc --noEmit

@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           npm test
-          node --test test-node/*.test.mjs
+          node --test test-node/*.node.mjs
           npx wrangler types --config wrangler.test.jsonc
           npx tsc --noEmit
 
