@@ -14,7 +14,40 @@
 4. 记下准备创建的 bucket 名，例如 `wilson-research-vault`；它仅在你的账户内需要唯一，建议与 Zotero 存储保持独立。
 5. 不需要购买域名，Worker 可使用免费的 `*.workers.dev`。
 
-## 2. 本地一次性部署（Node.js 22+）
+## 2. 推荐：在 GitHub 一键部署（Mac 不用安装环境）
+
+代码仓库现已提供 [Deploy Obsidian Cloud (manual)](https://github.com/WilsonWukz/obsidian-knowledge-mcp/actions/workflows/deploy-cloudflare.yml) 工作流。**必须手动触发**，不会因为代码更新就动你的云端资源。
+
+**A. 创建仅限 Cloudflare 部署的 API Token：**
+
+1. Cloudflare Dashboard → **My Profile → API Tokens**（或 Manage account → Account API tokens）→ **Create Token**。
+2. 选择 **Edit Cloudflare Workers** 模板；检查包含 Workers Scripts、Workers KV Storage、Workers R2 Storage 的写权限，**仅限你自己的 Cloudflare Account**。如果页面使用新权限体系，需要授予创建 Worker、KV、R2 的相应权限。
+3. 完成创建后，将令牌复制到密码管理器；**不要贴在聊天、仓库、Slack、Issue 或工作流输入框中**。
+
+**B. 把两项凭据放到 GitHub Secret，而不是代码：**
+
+仓库 → **Settings → Secrets and variables → Actions → New repository secret**。
+
+| Secret 名称 | 填入内容 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | 上一步创建的 Cloudflare 部署 API Token |
+| `OBSIDIAN_MCP_AUTH_PASSWORD` | 自己生成的 **至少 32 字符的全新独立口令**，保存在密码管理器中，后续 ChatGPT/Slack OAuth 登录要用 |
+
+注意：**第二项不是 Cloudflare Token、不是 Zotero 密码，也不是稍后 Remotely Save 的 R2 Access Key。** 三种凭据各司其职，不要混用。
+
+**C. 点击手动部署：**
+
+1. 仓库 → **Actions → Deploy Obsidian Cloud (manual) → Run workflow**（选择 `main`）。
+2. `account_id` 填你的 32 位 Cloudflare Account ID。
+3. `bucket_name` 保持默认 **`wilson-obsidian-mcp-test`**，它会成为专门的私人**测试存储桶**；如果账号已有同名存储桶，先确认其中没有需要保护的数据。生产笔记库暂不接入。
+4. 点击 **Run workflow**。流水线先跑全部离线测试，然后自动创建或复用 R2 bucket 与同名 OAuth KV、部署 Worker、设置 OAuth Secret、检查公开的 `/health`。
+5. 成功后打开该 Action 的 **Summary**，复制其中 `https://...workers.dev/mcp` 地址，返回聊天告诉我地址即可。**只发 MCP URL，不发送 Secret。**
+
+这套部署通过 GitHub Actions 的短期运行环境调用 Wrangler。R2 与 Workers Free 有使用限额，首次启用 R2 可能要求 Cloudflare 结算设置。部署流水线从不把凭据写进 Git 仓库；**工作流实际运行成功前，不能宣称已完成云端部署**。
+
+### 备选：Mac 本地部署
+
+如果 GitHub Actions 权限配置不便，也可以运行：
 
 ```bash
 git clone https://github.com/WilsonWukz/obsidian-knowledge-mcp.git
@@ -22,29 +55,14 @@ cd obsidian-knowledge-mcp
 npm ci
 npm test
 cp .env.example .env
-```
-
-在你的 Mac 上用编辑器修改私密的 `.env`（该文件已加入 Git 忽略），填写：
-
-```dotenv
-CLOUDFLARE_ACCOUNT_ID=这里填你的AccountID
-R2_BUCKET_NAME=wilson-research-vault
-MCP_HOSTNAME=
-VAULT_PREFIX=
-```
-
-然后依次执行：
-
-```bash
+# 在本机填写 .env 的 CLOUDFLARE_ACCOUNT_ID 和 R2_BUCKET_NAME，MCP_HOSTNAME 留空
 npx wrangler login
 npm run setup
-npx wrangler secret put AUTH_PASSWORD
 npx wrangler deploy
+npx wrangler secret put AUTH_PASSWORD
 ```
 
-`AUTH_PASSWORD` 请使用新的长随机口令，**不要**复用 Zotero MCP 密码，**不要发到聊天里**。也不要设置 `UPLOAD_TOKEN`，v0.1 禁止上传。
-
-`npm run setup` 会调用 Cloudflare API 创建 R2 bucket、OAuth KV 命名空间及本地私有 Wrangler 配置。部署后记下控制台返回的 `https://...workers.dev` URL。
+不要把 `.env`、口令或 API Token 发到聊天或公开仓库。
 
 ## 3. 为 Obsidian 配置 R2 同步
 
