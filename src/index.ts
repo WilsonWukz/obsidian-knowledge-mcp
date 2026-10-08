@@ -1,8 +1,9 @@
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { ObsidianMCP } from "./mcp/agent";
+import { ReviewPlans } from "./review/store";
 import AuthHandler from "./auth/handler";
 
-export { ObsidianMCP };
+export { ObsidianMCP, ReviewPlans };
 
 export default new OAuthProvider({
   apiRoute: "/mcp",

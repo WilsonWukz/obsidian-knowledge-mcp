@@ -122,6 +122,7 @@ function applyDefaults(env) {
   if (!env.MCP_HOSTNAME) env.MCP_HOSTNAME = "";
   if (!env.SERVICE_BASE_URL) env.SERVICE_BASE_URL = env.MCP_HOSTNAME ? "https://" + env.MCP_HOSTNAME : "";
   if (env.VAULT_PREFIX === undefined) env.VAULT_PREFIX = "";
+  if (env.ENABLE_REVIEWED_WRITES === undefined) env.ENABLE_REVIEWED_WRITES = "false";
   if (env.DAILY_NOTE_PATH_TEMPLATE === undefined) env.DAILY_NOTE_PATH_TEMPLATE = "Daily Notes/{{YYYY-MM-DD}}.md";
   // Other periodic cadences default to empty (disabled) — opt in per cadence.
   for (const v of [

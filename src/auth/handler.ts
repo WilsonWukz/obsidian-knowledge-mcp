@@ -5,6 +5,7 @@ import { MIN_SECRET_LEN } from "../config";
 import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limit";
 import { log } from "../log";
 import { VERSION } from "../version";
+import { handleReview } from "../review/http";
 
 function html(body: string, status = 200): Response {
   return new Response(body, {
@@ -98,6 +99,12 @@ export default {
     // Obsidian desktop may still sync normally using separate bucket credentials.
     if (url.pathname === "/upload") {
       return new Response("Not found", { status: 404 });
+    }
+
+    // Owner's separate browser confirmation never mutates R2 directly.
+    if (url.pathname.startsWith("/review/")) {
+      const review = await handleReview(req,env);
+      if (review) return review;
     }
 
     if (url.pathname !== "/authorize") {
