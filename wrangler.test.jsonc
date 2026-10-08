@@ -18,7 +18,6 @@
   ],
   "vars": {
     "VAULT_PREFIX": "",
-    "AUTH_PASSWORD": "synthetic-test-password-never-use-in-production",
     "DAILY_NOTE_PATH_TEMPLATE": "Daily Notes/{{YYYY-MM-DD}}.md",
     "WEEKLY_NOTE_PATH_TEMPLATE": "",
     "MONTHLY_NOTE_PATH_TEMPLATE": "",
