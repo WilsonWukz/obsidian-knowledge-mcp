@@ -43,6 +43,19 @@ In `get_note_graph`, destinations can be `resolved`, `ambiguous` or `missing`. L
 
 **Read-only is enforced by a server-side default-deny tool allowlist.** No AI-initiated create, update, rename, delete, attachment upload, periodic note mutation or admin backfill is available. The direct HTTP `/upload` endpoint returns 404. Desktop Obsidian still syncs normally with its own independent S3/R2 credentials.
 
+## Recommended: browser-only deployment through GitHub Actions
+
+To deploy without a Mac terminal, use the **manually triggered** [Deploy Obsidian Cloud](https://github.com/WilsonWukz/obsidian-knowledge-mcp/actions/workflows/deploy-cloudflare.yml) workflow. Create an account-scoped Cloudflare deployment API Token with **Workers Scripts Write, Workers KV Storage Write, and Workers R2 Storage Write** (the *Edit Cloudflare Workers* template is a starting point).
+
+In **GitHub → Settings → Secrets and variables → Actions**, create exactly two repository secrets:
+
+- `CLOUDFLARE_API_TOKEN` — Cloudflare deployment API Token, **not** an R2 S3 Access Key.
+- `OBSIDIAN_MCP_AUTH_PASSWORD` — a new independent 32+-character login password; retain it in your password manager for OAuth consent.
+
+Run the workflow manually on `main`, entering your 32-character Cloudflare Account ID as the `account_id` input, with the default **`wilson-obsidian-mcp-test`** private test bucket. The job performs offline tests, idempotently provisions the bucket and OAuth KV namespace, deploys the read-only Worker, uploads its OAuth password as a Cloudflare secret and verifies the health route. Its run summary contains the MCP URL. Never enter passwords or tokens in workflow inputs.
+
+GitHub Actions is one-time user-approved provisioning, **not** automatic deployment on every push. Both Cloudflare and GitHub credentials must remain private. A separate bucket-scoped R2 token is required later for the Obsidian Remotely Save plugin. [Chinese setup guide](docs/CLOUDFLARE_SETUP.zh-CN.md) has complete UI steps.
+
 ## Getting started
 
 Start with a **separate synthetic test vault**, not your full research notes.
