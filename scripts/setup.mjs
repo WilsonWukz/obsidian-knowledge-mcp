@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPT_DIR, "..");
@@ -18,6 +18,7 @@ const TEMPLATE_PATH = join(ROOT, "wrangler.example.jsonc");
 const OUT_PATH = join(ROOT, "wrangler.jsonc");
 
 const REQUIRED = ["CLOUDFLARE_ACCOUNT_ID", "R2_BUCKET_NAME"];
+const OAUTH_KV_TITLE = "obsidian-knowledge-mcp-oauth";
 
 function parseEnv(text) {
   const out = {};
@@ -71,33 +72,50 @@ function ensureR2Bucket(name) {
   }
 }
 
+/** Reuse a stable, named OAuth KV namespace across fresh CI runners. */
+export function parseNamespaceList(output) {
+  const first = output.indexOf("[");
+  const last = output.lastIndexOf("]");
+  if (first < 0 || last < first) throw new Error("No JSON namespace list returned by Wrangler");
+  const namespaces = JSON.parse(output.slice(first, last + 1));
+  if (!Array.isArray(namespaces) ||
+      namespaces.some(n => !n || typeof n.title !== "string" ||
+        typeof n.id !== "string" || !/^[a-f0-9]{32}$/.test(n.id))) {
+    throw new Error("Unexpected KV namespace list format");
+  }
+  return namespaces;
+}
+
+function recordKvId(env, id) {
+  env.OAUTH_KV_ID = id;
+  appendFileSync(ENV_PATH, "\n# reused or newly created OAuth namespace\nOAUTH_KV_ID=" + id + "\n");
+}
+
 function ensureKvNamespace(env) {
   if (env.OAUTH_KV_ID) {
-    console.log(`KV namespace OAUTH_KV: configured (from .env)`);
+    if (!/^[a-f0-9]{32}$/.test(env.OAUTH_KV_ID)) {
+      throw new Error("OAUTH_KV_ID is not a valid namespace ID");
+    }
+    console.log("OAuth KV: reusing explicit namespace ID");
     return;
   }
-  process.stdout.write(`KV namespace OAUTH_KV... `);
-  let out;
-  try {
-    out = runWrangler(["kv", "namespace", "create", "OAUTH_KV"]);
-  } catch (e) {
-    console.log("FAILED");
-    console.error(e.stderr || e.message);
-    process.exit(1);
+  const namespaces = parseNamespaceList(runWrangler(["kv", "namespace", "list"]));
+  const matching = namespaces.filter(item => item.title === OAUTH_KV_TITLE);
+  if (matching.length > 1) {
+    throw new Error("Multiple OAuth namespaces have the same name; manual review required");
   }
-  // Wrangler output contains either `id = "..."` or `"id": "..."` depending
-  // on version; accept both. KV ids are 32 hex chars.
-  const m = out.match(/(?:id\s*[=:]\s*"?|"id"\s*:\s*")([0-9a-f]{32})"?/);
-  if (!m) {
-    console.log("FAILED");
-    console.error("could not parse KV namespace id from wrangler output:");
-    console.error(out);
-    process.exit(1);
+  if (matching.length === 1) {
+    recordKvId(env, matching[0].id);
+    console.log("OAuth KV: reused the existing named namespace");
+    return;
   }
-  const id = m[1];
-  console.log(`created (${maskId(id)}, written to .env)`);
-  appendFileSync(ENV_PATH, `\n# auto-filled by scripts/setup.mjs\nOAUTH_KV_ID=${id}\n`);
-  env.OAUTH_KV_ID = id;
+  const output = runWrangler(["kv", "namespace", "create", OAUTH_KV_TITLE]);
+  const match = output.match(/(?:id\s*[=:]\s*"?|"id"\s*:\s*")([0-9a-f]{32})"?/);
+  if (!match) {
+    throw new Error("KV creation succeeded but namespace ID was not recognized; inspect account before retry");
+  }
+  recordKvId(env, match[1]);
+  console.log("OAuth KV: created a dedicated named namespace");
 }
 
 function applyDefaults(env) {
@@ -120,6 +138,14 @@ function applyDefaults(env) {
 }
 
 function verifyAccount(accountId) {
+  if (!/^[a-f0-9]{32}$/.test(accountId)) throw new Error("Account ID must be exactly 32 hexadecimal characters");
+  // CI uses an account-scoped token; whoami requires extra membership scopes.
+  // Actual resource calls will still independently verify Cloudflare access.
+  if (process.env.CLOUDFLARE_API_TOKEN &&
+      process.env.CLOUDFLARE_ACCOUNT_ID === accountId) {
+    console.log("Cloudflare API token supplied for noninteractive deployment");
+    return;
+  }
   process.stdout.write(`wrangler auth... `);
   let whoami;
   try {
@@ -189,4 +215,4 @@ function main() {
   console.log("  3. npx wrangler deploy                      # deploy");
 }
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();
