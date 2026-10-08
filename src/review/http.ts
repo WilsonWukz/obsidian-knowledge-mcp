@@ -104,12 +104,12 @@ export async function handleReview(req:Request,env:Env):Promise<Response|null> {
   const url=new URL(req.url);
   const m=/^\/review\/([A-Za-z0-9_-]{32})(?:\/(view|approve))?$/.exec(url.pathname);
   if(!url.pathname.startsWith("/review/"))return null;
-  if(env.ENABLE_REVIEWED_WRITES!=="true")return noAccess("Reviewed writes are disabled",404);
+  if(String(env.ENABLE_REVIEWED_WRITES)!=="true")return noAccess("Reviewed writes are disabled",404);
   if(!m)return noAccess("Not found",404);
   const id=m[1],route=m[2]??"";
   if(url.protocol!=="https:") {
     url.protocol="https:";
-    return Response.redirect(url,308);
+    return Response.redirect(url.toString(),308);
   }
   if(req.method==="GET" && !route) return login(id);
   if(req.method!=="POST" || !originMatches(req))return noAccess("Invalid review request",403);

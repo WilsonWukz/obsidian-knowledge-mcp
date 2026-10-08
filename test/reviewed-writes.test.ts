@@ -11,7 +11,7 @@ const base="https://vault.example.test";
 const configured = () => ({ ...env, ENABLE_REVIEWED_WRITES:"true",
   AUTH_PASSWORD:"test-password-0123456789abcdef0123456789",
   SERVICE_BASE_URL:base,
-} as Env);
+} as unknown as Env);
 const vault = () => new R2Client(env.VAULT,makeCfg());
 function unique(label="Note"){return "INSES/"+label+"-"+crypto.randomUUID().replaceAll("-","")+".md";}
 async function directApproval(id:string,digest:string) {
