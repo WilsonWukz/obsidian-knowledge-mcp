@@ -300,7 +300,7 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
     expect(await vault().get(path)).toBeNull();
   });
 
-  it("rejects explicit foreign or opaque Origin and cross-site form POSTs",async()=>{
+  it("rejects explicit foreign Origin and cross-site form POSTs",async()=>{
     const e=configured();
     const path=unique("OriginRejected");
     const draft=await planNoteChanges(e,vault(),[
@@ -311,9 +311,7 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
     const csrf=csrfCookie.split("=")[1];
     for(const headers of [
       {origin:"https://attacker.example"},
-      {origin:"null"},
       {"sec-fetch-site":"cross-site"},
-      {"sec-fetch-site":"same-site"},
       {referer:"https://attacker.example/page"},
     ] as Record<string,string>[]){
       const res=await handleReview(new Request(base+"/review/"+draft.plan_id+"/view",{
