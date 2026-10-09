@@ -315,7 +315,7 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
       {"sec-fetch-site":"cross-site"},
       {"sec-fetch-site":"same-site"},
       {referer:"https://attacker.example/page"},
-    ]){
+    ] as Record<string,string>[]){
       const res=await handleReview(new Request(base+"/review/"+draft.plan_id+"/view",{
         method:"POST",
         headers:{"content-type":"application/x-www-form-urlencoded",cookie:csrfCookie,...headers},
