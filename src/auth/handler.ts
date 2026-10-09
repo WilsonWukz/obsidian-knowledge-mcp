@@ -87,7 +87,7 @@ export default {
     // reflects the *deployed* version immediately (independent of the Durable
     // Object's tool-registry cache). Handy for `curl …/health` deploy checks.
     if (url.pathname === "/health") {
-      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION, reviewed_writes_enabled: String(env.ENABLE_REVIEWED_WRITES) === "true" }), {
+      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION, reviewed_writes_enabled: String(env.ENABLE_REVIEWED_WRITES) === "true", guarded_sync_api_enabled: String(env.ENABLE_GUARDED_SYNC_API) === "true" && String(env.ENABLE_GUARDED_SYNC) === "true" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
