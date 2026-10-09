@@ -121,7 +121,7 @@ export async function makeCommit(args:{
   const groups=validateGroups(args.groups??[],changes.map(c=>c.path));
   const createdAt=args.createdAt??new Date().toISOString();
   if(Number.isNaN(Date.parse(createdAt)))throw new SafeSyncError('INVALID_DATE');
-  const raw={protocol:SYNC_PROTOCOL_VERSION,parents:args.parent?[args.parent.id]:[],
+  const raw={protocol:SYNC_PROTOCOL_VERSION as const,parents:args.parent?[args.parent.id]:[],
     createdAt,actor:args.actor,message:args.message.trim(),files:copy(args.files),changes,groups};
   if(bytes(JSON.stringify(raw))>MAX_COMMIT_BYTES)throw new SafeSyncError('COMMIT_TOO_LARGE');
   return {...raw,id:await hashCanonical(raw)};
@@ -129,7 +129,7 @@ export async function makeCommit(args:{
 /** A migration anchor can cover more than 5 existing notes without editing any of them. */
 export async function makeGenesis(files:FileSnapshot,createdAt='1970-01-01T00:00:00.000Z'):Promise<SyncCommit>{
   validateSnapshot(files);
-  const raw={protocol:SYNC_PROTOCOL_VERSION,parents:[],createdAt,actor:'migration' as Actor,
+  const raw={protocol:SYNC_PROTOCOL_VERSION as const,parents:[],createdAt,actor:'migration' as Actor,
     message:'Adopt existing vault snapshot; no notes written',files:copy(files),changes:[] as FileChange[],
     groups:[] as SemanticGroup[]};
   return {...raw,id:await hashCanonical(raw)};
