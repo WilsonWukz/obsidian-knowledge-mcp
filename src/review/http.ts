@@ -40,18 +40,46 @@ function formToken(req:Request,form:FormData):boolean {
  * This method is ONLY an origin safety filter. Caller must still verify
  * formToken(req, form) BEFORE checking any password or approval proof.
  */
-function originMatches(req:Request):boolean {
-  const expected=new URL(req.url).origin;
+/**
+ * Cloudflare's request URL can differ from the browser's public origin when
+ * an OAuth proxy/embedded browser forwards a same-site form submission.
+ *
+ * Strong anti-CSRF remains independent: every POST must have a matching
+ * cryptographically random 192-bit form token AND a host-only HttpOnly Secure
+ * SameSite=Strict cookie; final approval also needs a signed, expiring proof.
+ * Never treat a missing Origin or the serialized opaque "null" Origin as
+ * evidence of a successful check. The CSRF check remains mandatory.
+ *
+ * We accept valid same-site Fetch Metadata; the former implementation denied
+ * "same-site" before even inspecting the CSRF token. Return categorical
+ * diagnostics only (never header values or credentials) for future issues.
+ */
+export function reviewBrowserProvenance(req:Request,publicOrigin?:string): string|null {
+  const requestOrigin=new URL(req.url).origin;
+  let expected=requestOrigin;
+  if(publicOrigin){
+    try {
+      const u=new URL(publicOrigin);
+      if(u.protocol==="https:" && u.hostname && !u.username && !u.password) {
+        expected=u.origin;
+      }
+    }catch { /* fall back to requestOrigin */ }
+  }
+  const fetchSite=req.headers.get("sec-fetch-site");
+  if(fetchSite==="cross-site")return "FETCH_SITE_CROSS_SITE";
+  if(fetchSite!==null && fetchSite!=="same-origin" && fetchSite!=="same-site" &&
+     fetchSite!=="none")return "FETCH_SITE_UNKNOWN";
   const origin=req.headers.get("origin");
-  const site=req.headers.get("sec-fetch-site");
-  if(site!==null && site!=="same-origin" && site!=="none")return false;
-  if(origin!==null && origin!==expected)return false;
+  if(origin!==null && origin!=="null" &&
+     origin!==expected && origin!==requestOrigin)return "EXPLICIT_ORIGIN_MISMATCH";
   const referer=req.headers.get("referer");
   if(referer!==null){
-    try { if(new URL(referer).origin!==expected)return false; }
-    catch { return false; }
+    try {
+      const parsed=new URL(referer).origin;
+      if(parsed!==expected && parsed!==requestOrigin)return "REFERER_MISMATCH";
+    }catch{return "REFERER_INVALID";}
   }
-  return true;
+  return null;
 }
 function page(body:string,status=200):Response {
   return new Response("<!doctype html><html lang='zh-CN'><head>"+
@@ -133,7 +161,13 @@ export async function handleReview(req:Request,env:Env):Promise<Response|null> {
     return Response.redirect(url.toString(),308);
   }
   if(req.method==="GET" && !route) return login(id);
-  if(req.method!=="POST" || !originMatches(req))return noAccess("Invalid review request",403);
+  if(req.method!=="POST") {
+    return noAccess("Review form method was not POST (FORM_METHOD_NOT_POST). Open the review URL directly in a regular browser tab and retry.",405);
+  }
+  const provenance=reviewBrowserProvenance(req,env.SERVICE_BASE_URL);
+  if(provenance) {
+    return noAccess("Invalid review request ("+provenance+"). Reopen the review URL directly in a browser tab.",403);
+  }
   const form=await req.formData();
   if(!formToken(req,form))return noAccess("CSRF validation failed; reopen the review link",403);
   if(route==="view"){
