@@ -17,6 +17,6 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: node --test test-node/*.node.mjs
-      - run: node --check scripts/setup.mjs && node --check scripts/ci-bootstrap.mjs
+      - run: node --check scripts/setup.mjs && node --check scripts/ci-bootstrap.mjs && node --check scripts/smoke-review-form.mjs
       - run: npx wrangler types --config wrangler.test.jsonc
       - run: npx tsc --noEmit

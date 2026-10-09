@@ -93,6 +93,11 @@ jobs:
           test -n "$MCP_LOGIN_PASSWORD"
           printf '%s' "$MCP_LOGIN_PASSWORD" | npx wrangler secret put AUTH_PASSWORD --config wrangler.jsonc
 
+      - name: Verify browser password form reached without any real approval
+        if: inputs.enable_reviewed_writes
+        run: |
+          set -euo pipefail
+          node scripts/smoke-review-form.mjs "$WORKER_URL"
       - name: Verify live Worker without accessing private vault data
         env:
           R2_BUCKET_NAME: "${{ inputs.bucket_name }}"
