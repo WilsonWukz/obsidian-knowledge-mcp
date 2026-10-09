@@ -82,7 +82,7 @@ test('bundled plugin has pure protocol and no require local dependency',async()=
 
 test('Keychain lookup uses /usr/bin/security and preserves actual service/account',async()=>{
  let captured;
- const fake=async (command,args,options)=>{captured={command,args,options};return {stdout:'K'.repeat(64)+'\\n',stderr:''};};
+ const fake=async (command,args,options)=>{captured={command,args,options};return {stdout:'K'.repeat(64)+String.fromCharCode(10),stderr:''};};
  const token=await readOwnerKeychainToken('vault-test-identity',fake,'darwin');
  assert.equal(token,'K'.repeat(64));
  assert.equal(captured.command,'/usr/bin/security');
