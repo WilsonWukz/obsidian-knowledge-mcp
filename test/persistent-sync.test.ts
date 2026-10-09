@@ -28,6 +28,7 @@ describe('isolated SQLite Durable Object and immutable R2 sync objects',()=>{
     const empty=await rpc(name,'status');
     expect(empty.status).toBe(200);expect(empty.data.headId).toBe(null);
     const created=await rpc(name,'bootstrap',{files:initial});
+    if(created.status!==200)throw new Error(`Bootstrap returned ${JSON.stringify(created)}`);
     expect(created.status).toBe(200);
     const genesis=created.data.headId as string;
     expect(genesis).toMatch(/^[a-f0-9]{64}$/);
