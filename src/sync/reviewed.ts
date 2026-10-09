@@ -39,6 +39,10 @@ async function rejected(env:Env,id:string,code:string,step?:PlannedStep):Promise
 export async function applyVersionedChanges(env:Env,id:string,digest:string):Promise<PlanView>{
  guard(env);
  if(!/^[a-f0-9]{64}$/.test(digest))throw new PlanError('INVALID_DIGEST');
+ // Pending plans created before cutover describe direct R2 writes and cannot
+ // be repurposed into a managed HEAD commit without a fresh owner review.
+ const historic=await planStoreCall<StoredPlan>(env,'get',{id});
+ if(!historic.plan.sync)throw new PlanError('LEGACY_PLAN_NOT_VALID_AFTER_CUTOVER');
  const claimed=await planStoreCall<StoredPlan & {claimed:boolean}>(env,'claim',{id,digest});
  if(!claimed.claimed)return viewPlan(env,claimed);
  let attempted=false;
@@ -82,6 +86,7 @@ export async function prepareVersionedUndo(env:Env,id:string):Promise<PlanView>{
  guard(env);
  const original=await planStoreCall<StoredPlan>(env,'get',{id});
  if(original.status!=='applied'||original.plan.undo_of)throw new PlanError('UNDO_UNAVAILABLE');
+ if(!original.plan.sync)throw new PlanError('LEGACY_UNDO_REQUIRES_MANUAL_REVIEW');
  if(original.plan.steps.some(s=>s.before===null))throw new PlanError('UNDO_CREATE_NOT_SUPPORTED');
  if(original.plan.steps.length!==original.receipts.length||
    original.receipts.some(r=>r.state!=='done'))throw new PlanError('UNDO_UNAVAILABLE');
