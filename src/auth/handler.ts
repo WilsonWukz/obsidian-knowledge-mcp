@@ -6,6 +6,7 @@ import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limi
 import { log } from "../log";
 import { VERSION } from "../version";
 import { handleReview } from "../review/http";
+import {handleGuardedSync} from "../sync/gateway";
 
 function html(body: string, status = 200): Response {
   return new Response(body, {
@@ -97,6 +98,9 @@ export default {
     // unaffected.
     // v0.1 read-only deployment: never expose a direct HTTP upload route.
     // Obsidian desktop may still sync normally using separate bucket credentials.
+    // Owner-only versioned sync. No OAuth bearer token or public bootstrap.
+    if(url.pathname === "/sync/v1")return handleGuardedSync(req,env);
+
     if (url.pathname === "/upload") {
       return new Response("Not found", { status: 404 });
     }
