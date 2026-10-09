@@ -33,7 +33,7 @@ describe('owner-approved genesis adoption and read overlay',()=>{
   expect(await v.get(M)).toBe(initial[M]);
   expect(await adoptLegacyVault(e,genesis.id)).toMatchObject({status:'already_initialized'});
   await v.put(M,'# rogue legacy writer');
-  const cutover={...e,GUARDED_SYNC_CUTOVER:'true'} as Env;
+  const cutover={...e,GUARDED_SYNC_CUTOVER:'true'} as unknown as Env;
   const overlay=makeReadableVault(cutover,buildVaultConfig(cutover));
   expect(await overlay.get(M)).toBe(initial[M]);
   expect((await overlay.listMarkdown()).filter(p=>p.startsWith('INSES/')).sort()).toEqual([M,P].sort());
