@@ -5,7 +5,7 @@ import { makeCfg } from "./_helpers";
 import { PlanError, validateActions, prepareNoteChanges } from "../src/review/plan";
 import { planStoreCall, type StoredPlan } from "../src/review/store";
 import { planNoteChanges, applyNotePlan, prepareUndo } from "../src/review/operations";
-import { handleReview } from "../src/review/http";
+import { handleReview, reviewBrowserProvenance } from "../src/review/http";
 
 const base="https://vault.example.test";
 const configured = () => ({ ...env, ENABLE_REVIEWED_WRITES:"true",
@@ -331,6 +331,73 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
     expect(withoutToken?.status).toBe(403);
     expect((await withoutToken!.text())).toContain("CSRF validation failed");
     expect((await planStoreCall<StoredPlan>(e,"get",{id:draft.plan_id})).status).toBe("pending");
+  });
+
+  it("accepts valid browser same-site and opaque Origin when CSRF is present",async()=>{
+    const e=configured(),path=unique("PrivacyOrigin");
+    const plan=await planNoteChanges(e,vault(),[{action:"create_note",path,content:"# Private review preview"}]);
+    const login=await handleReview(new Request(base+"/review/"+plan.plan_id),e);
+    const csrfCookie=(login!.headers.get("set-cookie")??"").split(";")[0];
+    const csrf=csrfCookie.split("=")[1];
+    for(const extra of [
+      {"sec-fetch-site":"same-site"},
+      {"sec-fetch-site":"same-origin"},
+      {origin:"null","sec-fetch-site":"none"},
+      {origin:"https://vault.example.test","sec-fetch-site":"same-site"},
+    ]) {
+      const request=new Request(base+"/review/"+plan.plan_id+"/view",{
+        method:"POST",
+        headers:{"content-type":"application/x-www-form-urlencoded",cookie:csrfCookie,...extra},
+        body:new URLSearchParams({csrf,password:e.AUTH_PASSWORD}),
+      });
+      const res=await handleReview(request,e);
+      expect(res?.status).toBe(200);
+      expect((await res!.text())).toContain("# Private review preview");
+    }
+    expect((await planStoreCall<StoredPlan>(e,"get",{id:plan.plan_id})).status).toBe("pending");
+    expect(await vault().get(path)).toBeNull();
+  });
+
+  it("gives safe categorical browser provenance errors without exposing submitted credentials",async()=>{
+    const e=configured(),path=unique("SafeDiagnostic");
+    const p=await planNoteChanges(e,vault(),[{action:"create_note",path,content:"# No login leak"}]);
+    const login=await handleReview(new Request(base+"/review/"+p.plan_id),e);
+    const cookie=(login!.headers.get("set-cookie")??"").split(";")[0];
+    const csrf=cookie.split("=")[1];
+    const sample=[
+      ["cross-site","FETCH_SITE_CROSS_SITE",{"sec-fetch-site":"cross-site"}],
+      ["bad-origin","EXPLICIT_ORIGIN_MISMATCH",{origin:"https://bad.example"}],
+      ["bad-referrer","REFERER_MISMATCH",{referer:"https://bad.example/page"}],
+    ] as Array<[string,string,Record<string,string>]>;
+    for(const [label,code,extra] of sample){
+      const result=await handleReview(new Request(base+"/review/"+p.plan_id+"/view",{
+        method:"POST",
+        headers:{"content-type":"application/x-www-form-urlencoded",cookie,...extra},
+        body:new URLSearchParams({csrf,password:e.AUTH_PASSWORD}),
+      }),e);
+      expect(result?.status,label).toBe(403);
+      const html=await result!.text();
+      expect(html).toContain(code);
+      expect(html).not.toContain(e.AUTH_PASSWORD);
+      expect(html).not.toContain("https://bad.example");
+    }
+    const getForm=await handleReview(new Request(base+"/review/"+p.plan_id+"/view"),e);
+    expect(getForm?.status).toBe(405);
+    expect(await getForm!.text()).toContain("FORM_METHOD_NOT_POST");
+    expect((await planStoreCall<StoredPlan>(e,"get",{id:p.plan_id})).status).toBe("pending");
+  });
+
+  it("uses trusted public origin when proxy request URL differs, without trusting arbitrary foreign origin",()=>{
+    const allowed="https://obsidian-knowledge-mcp.wilsonkwu.workers.dev";
+    const req=new Request("https://localhost.internal/review/fake/view",{
+      method:"POST",
+      headers:{origin:allowed,"sec-fetch-site":"same-site"},
+    });
+    expect(reviewBrowserProvenance(req,allowed)).toBeNull();
+    const malicious=new Request("https://localhost.internal/review/fake/view",{
+      method:"POST",headers:{origin:"https://evil.example"},
+    });
+    expect(reviewBrowserProvenance(malicious,allowed)).toBe("EXPLICIT_ORIGIN_MISMATCH");
   });
 
 });
