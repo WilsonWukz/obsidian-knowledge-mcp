@@ -1,0 +1,9 @@
+{
+  "id": "guarded-sync",
+  "name": "Guarded Sync",
+  "version": "0.3.0-alpha.1",
+  "minAppVersion": "1.5.0",
+  "description": "Local staging, immutable commits and fail-closed version review for protected research notes. Development preview only.",
+  "author": "WilsonWukz",
+  "isDesktopOnly": true
+}

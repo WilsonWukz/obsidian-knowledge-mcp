@@ -107,3 +107,8 @@ npx tsc --noEmit
 - **v0.4**: typed note graph (paper/concept/method/dataset/question), explicit claims vs personal hypotheses, reproducible evidence trails.
 
 This project is not affiliated with Obsidian, Zotero or OpenAI and has not undergone a professional security audit.
+
+
+## v0.3 Phase C: guarded local history (development only)
+
+The standalone desktop companion in [clients/obsidian-guarded-sync](clients/obsidian-guarded-sync/README.md) implements local Status, Stage, Commit and guarded review/pull/merge logic. Phase B's persistent revision ledger remains isolated; this branch does **not** expose a public sync gateway or protect existing Remotely Save writes. See [Phase C safety handover](docs/GUARDED_SYNC_PHASE_C.md). Do not deploy this branch to the production Worker or migrate the real Vault until Phase D cutover checks pass.

@@ -17,6 +17,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: node --experimental-strip-types --test test-node/*.node.mjs
+      - run: node clients/obsidian-guarded-sync/scripts/build.mjs && node --check clients/obsidian-guarded-sync/main.js
+      - run: node --experimental-strip-types --test clients/obsidian-guarded-sync/tests/*.cjs
       - run: node --check scripts/setup.mjs && node --check scripts/ci-bootstrap.mjs && node --check scripts/smoke-review-form.mjs
       - run: npx wrangler types --config wrangler.test.jsonc
       - run: npx tsc --noEmit
