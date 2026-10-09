@@ -29,6 +29,8 @@ export type PlannedStep = {
 export interface ImmutableNotePlan {
   steps: PlannedStep[];
   undo_of?: string;
+  /** Bound to the authoritative sync HEAD and included in signed plan digest. */
+  sync?: {expectedHead:string};
   note: string;
 }
 
