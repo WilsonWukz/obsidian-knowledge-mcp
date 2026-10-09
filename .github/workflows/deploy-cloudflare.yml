@@ -148,7 +148,7 @@ jobs:
             import { readFileSync } from "node:fs";
             const body = JSON.parse(readFileSync("health.json", "utf8"));
             const expected = process.env.ENABLE_REVIEWED_WRITES === "true";
-            if (body.ok !== true || body.version !== "0.3.0" ||
+            if (body.ok !== true || body.version !== "0.3.1" ||
                 body.reviewed_writes_enabled !== expected ||
                 body.guarded_sync_api_enabled !== (process.env.ENABLE_GUARDED_SYNC_API === "true"))
               throw Error("Worker version or reviewed-write safety mode disagrees with workflow input");
