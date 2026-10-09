@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),fsp=require('node:fs/promises'),os=require('node:os'),path=require('node:path'),Module=require('node:module');
 const originalLoad=Module._load;
 Module._load=function(req,...args){if(req==='obsidian'){class Base{};return {Plugin:Base,ItemView:Base,PluginSettingTab:Base,Setting:Base,Notice:Base,Modal:Base,requestUrl:async()=>({status:404,json:{error:'NOT_DEPLOYED'}})};}return originalLoad.call(this,req,...args);};
-const plugin=require('../src/plugin.js');const {DiskStore,ObsidianVaultAdapter,GatewayRemote,validateEndpoint,vaultIdentity}=plugin._test;
+const plugin=require('../src/plugin.js');const {DiskStore,ObsidianVaultAdapter,GatewayRemote,validateEndpoint,vaultIdentity,readOwnerKeychainToken}=plugin._test;
 Module._load=originalLoad;
 const {genesis,SyncError}=require('../src/core.js');
 async function temp(){return fsp.mkdtemp(path.join(os.tmpdir(),'guarded-sync-tests-'));}
@@ -78,4 +78,57 @@ test('bundled plugin has pure protocol and no require local dependency',async()=
  const main=await fsp.readFile(path.join(__dirname,'..','main.js'),'utf8');
  assert.match(main,/class LocalEngine/);assert.match(main,/module\.exports\.default=GuardedSyncPlugin/);
  assert.doesNotMatch(main,/require\('\.\/core\.js'\)/);
+});
+
+test('Keychain lookup uses /usr/bin/security and preserves actual service/account',async()=>{
+ let captured;
+ const fake=async (command,args,options)=>{captured={command,args,options};return {stdout:'K'.repeat(64)+'\\n',stderr:''};};
+ const token=await readOwnerKeychainToken('vault-test-identity',fake,'darwin');
+ assert.equal(token,'K'.repeat(64));
+ assert.equal(captured.command,'/usr/bin/security');
+ assert.deepEqual(captured.args,['find-generic-password','-s','obsidian-guarded-sync','-a','vault-test-identity','-w']);
+ assert.ok(captured.options.timeout>=20000);
+ assert.equal(captured.options.encoding,'utf8');
+});
+
+test('Keychain lookup rejects unsupported platforms without starting a subprocess',async()=>{
+ let attempted=false;
+ await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>{attempted=true;return {stdout:'K'.repeat(64)};},'linux'),{code:'MAC_ONLY'});
+ assert.equal(attempted,false);
+});
+
+test('Keychain lookup distinguishes nonexistent security executable from missing keychain item',async()=>{
+ const err=Object.assign(new Error('spawn ENOENT'),{code:'ENOENT'});
+ await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>{throw err;},'darwin'),{code:'KEYCHAIN_COMMAND_UNAVAILABLE'});
+});
+
+test('Keychain lookup distinguishes denied keychain access',async()=>{
+ const err=Object.assign(new Error('denied'),{code:1,stderr:'User interaction is not allowed.'});
+ await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>{throw err;},'darwin'),{code:'KEYCHAIN_ACCESS_DENIED'});
+});
+
+test('Keychain lookup recognizes explicit item-not-found diagnosis',async()=>{
+ const err=Object.assign(new Error('not found'),{code:44,stderr:'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.'});
+ await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>{throw err;},'darwin'),{code:'KEYCHAIN_TOKEN_MISSING'});
+});
+
+test('Keychain lookup maps canceled, timed-out approval prompts to an explicit timeout error',async()=>{
+ const err=Object.assign(new Error('approval timed out'),{code:null,signal:'SIGTERM',killed:true});
+ await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>{throw err;},'darwin'),{code:'KEYCHAIN_ACCESS_TIMEOUT'});
+});
+
+test('Keychain lookup fails closed for empty, short or malformed subprocess output',async()=>{
+ for(const stdout of ['', 'abc', '  ']){
+  await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>({stdout}), 'darwin'),{code:'KEYCHAIN_TOKEN_INVALID'});
+ }
+});
+
+test('Keychain lookup never prints a secret through an unexpected error',async()=>{
+ const secret='SYNTHETIC_TOKEN_VALUE_THAT_MUST_NOT_BE_LOGGED';
+ const err=Object.assign(new Error('private:'+secret),{code:1,stderr:'private:'+secret});
+ await assert.rejects(()=>readOwnerKeychainToken('vault',async()=>{throw err;},'darwin'),(failure)=>{
+  assert.equal(failure.code,'KEYCHAIN_LOOKUP_FAILED');
+  assert.ok(!failure.message.includes(secret));
+  return true;
+ });
 });
