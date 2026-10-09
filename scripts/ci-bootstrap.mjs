@@ -29,6 +29,9 @@ export function renderPrivateEnv({ accountId, bucketName, publicOrigin = "", ena
   if (![true, false, "true", "false"].includes(enableReviewedWrites)) {
     throw new Error("enableReviewedWrites must be a boolean");
   }
+  if(reviewed && !publicOrigin){
+    throw new Error("Reviewed writes require a verified public Worker origin for the owner review page");
+  }
   // No OAuth password or Cloudflare API token is written to this file.
   return [
     "CLOUDFLARE_ACCOUNT_ID=" + accountId,

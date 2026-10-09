@@ -1,6 +1,6 @@
 # Cloudflare R2 + Obsidian + MCP：首次部署
 
-本指南面向 **Mac 原生 Obsidian、云端全天候 Jarvis、尽量利用免费额度**。代码已经在仓库，但当前尚未部署到你的 Cloudflare 帐户。
+本指南面向 **Mac 原生 Obsidian、云端全天候 Jarvis、尽量利用免费额度**。你已成功部署 v0.1 只读 Worker，且测试 Vault 已通过 Mac → R2 同步、ChatGPT 云端读取；以下流程也适用于重新部署 v0.2。**v0.2 的云端受控写入及 Mac 拉取仍须单独验收。**
 
 ## 0. 不动原来的 Vault
 
@@ -40,7 +40,7 @@
 1. 仓库 → **Actions → Deploy Obsidian Cloud (manual) → Run workflow**（选择 `main`）。
 2. `account_id` 填你的 32 位 Cloudflare Account ID。
 3. `bucket_name` 保持默认 **`wilson-obsidian-mcp-test`**，它会成为专门的私人**测试存储桶**；如果账号已有同名存储桶，先确认其中没有需要保护的数据。生产笔记库暂不接入。
-4. 点击 **Run workflow**。流水线先跑全部离线测试，然后自动创建或复用 R2 bucket 与同名 OAuth KV、部署 Worker、设置 OAuth Secret、检查公开的 `/health`。
+4. v0.2 额外填写 `public_origin` 为 `https://obsidian-knowledge-mcp.wilsonkwu.workers.dev`，`enable_reviewed_writes` **默认先保持 false**。点击 **Run workflow**。流水线先跑全部离线测试，随后创建或复用 R2 bucket 与 OAuth KV、部署 Worker、设置 OAuth Secret、并检查 `/health` 中的版本和写入开关。只有测试 Vault 备份、审批与 Mac 双向拉取验证准备就绪后，再专门以 true 重新运行。
 5. 成功后打开该 Action 的 **Summary**，复制其中 `https://...workers.dev/mcp` 地址，返回聊天告诉我地址即可。**只发 MCP URL，不发送 Secret。**
 
 这套部署通过 GitHub Actions 的短期运行环境调用 Wrangler。R2 与 Workers Free 有使用限额，首次启用 R2 可能要求 Cloudflare 结算设置。部署流水线从不把凭据写进 Git 仓库；**工作流实际运行成功前，不能宣称已完成云端部署**。
@@ -64,7 +64,11 @@ npx wrangler secret put AUTH_PASSWORD
 
 不要把 `.env`、口令或 API Token 发到聊天或公开仓库。
 
-## 3. 为 Obsidian 配置 R2 同步
+## 3. 为 Obsidian 配置 R2 双向同步
+
+Mac Obsidian 的 Remotely Save 是真正负责把云端改动下载回本地的组件。设置 → Remotely Save → **高级设置 → 同步方向 `Bidirectional`**；初次使用先手动同步并验收，后续再设置每 5 分钟自动运行和启动后同步一次。正式对同一篇笔记并发修改前必须处理本地离线版本冲突，不能只靠“保留较新”时间戳。完整操作与测试见 [Mac ↔ R2 双向同步验收](MAC_BIDIRECTIONAL_SYNC.zh-CN.md)。
+
+
 
 Cloudflare → R2 → **Manage R2 API Tokens** → 创建仅能访问新 bucket 的读写 API token。把它保存在你的密码管理器中（不要在 GitHub 和 Slack 里发送）。
 

@@ -28,6 +28,10 @@ test("reviewed writes require an explicit opt-in and a trusted public origin", (
     accountId:"a".repeat(32),bucketName:"wilson-obsidian-mcp-test",
     publicOrigin:"https://attacker.example",
   }),/Worker public origin/);
+  assert.throws(()=>renderPrivateEnv({
+    accountId:"a".repeat(32),bucketName:"wilson-obsidian-mcp-test",
+    enableReviewedWrites:true,
+  }),/require a verified public Worker origin/);
 });
 test("Cloudflare CI refuses invalid account or production bucket", () => {
   assert.throws(() => renderPrivateEnv({ accountId: "bad", bucketName: "vault-test" }), /Account ID/i);
