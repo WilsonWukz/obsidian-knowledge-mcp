@@ -342,7 +342,7 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
       {"sec-fetch-site":"same-origin"},
       {origin:"null","sec-fetch-site":"none"},
       {origin:"https://vault.example.test","sec-fetch-site":"same-site"},
-    ]) {
+    ] as Record<string,string>[]) {
       const request=new Request(base+"/review/"+plan.plan_id+"/view",{
         method:"POST",
         headers:{"content-type":"application/x-www-form-urlencoded",cookie:csrfCookie,...extra},
