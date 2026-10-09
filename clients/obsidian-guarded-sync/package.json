@@ -1,0 +1,11 @@
+{
+  "name": "obsidian-guarded-sync-companion",
+  "version": "0.3.0-alpha.1",
+  "private": true,
+  "type": "commonjs",
+  "description": "Mac Obsidian guarded sync companion. Development preview only.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --experimental-strip-types --test tests/*.cjs"
+  }
+}
