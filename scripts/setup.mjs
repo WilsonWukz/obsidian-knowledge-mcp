@@ -123,6 +123,17 @@ function applyDefaults(env) {
   if (!env.SERVICE_BASE_URL) env.SERVICE_BASE_URL = env.MCP_HOSTNAME ? "https://" + env.MCP_HOSTNAME : "";
   if (env.VAULT_PREFIX === undefined) env.VAULT_PREFIX = "";
   if (env.ENABLE_REVIEWED_WRITES === undefined) env.ENABLE_REVIEWED_WRITES = "false";
+  for(const flag of ["ENABLE_GUARDED_SYNC","ENABLE_GUARDED_SYNC_API",
+                     "ENABLE_SYNC_ADOPTION","GUARDED_SYNC_CUTOVER"]){
+    if(env[flag]===undefined)env[flag]="false";
+    if(!["true","false"].includes(env[flag]))throw new Error("Invalid Boolean sync flag "+flag);
+  }
+  if(!env.SYNC_OBJECTS_BUCKET_NAME)env.SYNC_OBJECTS_BUCKET_NAME=env.R2_BUCKET_NAME+"-sync";
+  if(!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(env.SYNC_OBJECTS_BUCKET_NAME))
+    throw new Error("Invalid dedicated sync object bucket name");
+  if(env.GUARDED_SYNC_CUTOVER==="true"&&env.ENABLE_GUARDED_SYNC_API!=="true")
+    throw new Error("Cannot cut over without authenticated owner gateway");
+
   if (env.DAILY_NOTE_PATH_TEMPLATE === undefined) env.DAILY_NOTE_PATH_TEMPLATE = "Daily Notes/{{YYYY-MM-DD}}.md";
   // Other periodic cadences default to empty (disabled) — opt in per cadence.
   for (const v of [
@@ -204,6 +215,7 @@ function main() {
 
   verifyAccount(env.CLOUDFLARE_ACCOUNT_ID);
   ensureR2Bucket(env.R2_BUCKET_NAME);
+  ensureR2Bucket(env.SYNC_OBJECTS_BUCKET_NAME); // dedicated immutable history; never VAULT
   ensureKvNamespace(env);
 
   let out = readFileSync(TEMPLATE_PATH, "utf8");
