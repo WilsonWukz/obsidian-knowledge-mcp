@@ -4,7 +4,10 @@ import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-export function renderPrivateEnv({ accountId, bucketName, publicOrigin = "", enableReviewedWrites = false }) {
+export function renderPrivateEnv({ accountId, bucketName, publicOrigin = "", enableReviewedWrites = false,
+  enableGuardedSyncApi = false, enableSyncAdoption = false, guardedSyncCutover = false,
+  legacyWritersRevoked = false,
+}) {
   if (!/^[a-f0-9]{32}$/.test(accountId || "")) {
     throw new Error("Invalid Cloudflare account ID: expected 32 hex characters");
   }
@@ -32,6 +35,17 @@ export function renderPrivateEnv({ accountId, bucketName, publicOrigin = "", ena
   if(reviewed && !publicOrigin){
     throw new Error("Reviewed writes require a verified public Worker origin for the owner review page");
   }
+  const bool = (x,label) => {
+    if(![true,false,"true","false"].includes(x))throw new Error(label+" must be boolean");
+    return x===true || x==="true";
+  };
+  const syncApi=bool(enableGuardedSyncApi,"enableGuardedSyncApi");
+  const adoption=bool(enableSyncAdoption,"enableSyncAdoption");
+  const cutover=bool(guardedSyncCutover,"guardedSyncCutover");
+  const revoked=bool(legacyWritersRevoked,"legacyWritersRevoked");
+  if((adoption||cutover)&&!syncApi)throw new Error("Guarded sync mode requires owner API");
+  if(adoption&&cutover)throw new Error("Cannot adopt and cut over in one deployment");
+  if(cutover&&!revoked)throw new Error("Cutover denied: legacy R2/S3 writers not revoked");
   // No OAuth password or Cloudflare API token is written to this file.
   return [
     "CLOUDFLARE_ACCOUNT_ID=" + accountId,
@@ -39,6 +53,10 @@ export function renderPrivateEnv({ accountId, bucketName, publicOrigin = "", ena
     "MCP_HOSTNAME=",
     "SERVICE_BASE_URL=" + publicOrigin,
     "ENABLE_REVIEWED_WRITES=" + (reviewed ? "true" : "false"),
+    "ENABLE_GUARDED_SYNC=" + (syncApi ? "true" : "false"),
+    "ENABLE_GUARDED_SYNC_API=" + (syncApi ? "true" : "false"),
+    "ENABLE_SYNC_ADOPTION=" + (adoption ? "true" : "false"),
+    "GUARDED_SYNC_CUTOVER=" + (cutover ? "true" : "false"),
     "OAUTH_KV_ID=",
     "VAULT_PREFIX=",
     "ATTACHMENT_FETCH_HOST_ALLOWLIST=",
@@ -59,7 +77,14 @@ function main() {
     bucketName: process.env.R2_BUCKET_NAME,
     publicOrigin: process.env.WORKER_PUBLIC_ORIGIN ?? "",
     enableReviewedWrites: process.env.ENABLE_REVIEWED_WRITES ?? "false",
+    enableGuardedSyncApi: process.env.ENABLE_GUARDED_SYNC_API ?? "false",
+    enableSyncAdoption: process.env.ENABLE_SYNC_ADOPTION ?? "false",
+    guardedSyncCutover: process.env.GUARDED_SYNC_CUTOVER ?? "false",
+    legacyWritersRevoked: process.env.LEGACY_WRITERS_REVOKED ?? "false",
   });
+  if(process.env.ENABLE_GUARDED_SYNC_API==="true" &&
+     (!process.env.OBSIDIAN_SYNC_OWNER_TOKEN || process.env.OBSIDIAN_SYNC_OWNER_TOKEN.length<32))
+    throw new Error("Missing OBSIDIAN_SYNC_OWNER_TOKEN GitHub secret (32+ characters)");
   writeFileSync(".env", privateEnv, { mode: 0o600, flag: "w" });
   console.log("Validated Cloudflare inputs and created private account configuration");
 }
