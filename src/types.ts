@@ -19,6 +19,12 @@ interface ManualBindings {
    * off/unset — the rare `mcp_request_id_collision` WARN canary fires regardless.
    * See the read_note cross-request payload-bleed investigation. */
   CONNECTION_DIAGNOSTICS?: string;
+  /** Separate 32+ character Mac owner token; never persisted to notes. */
+  SYNC_OWNER_TOKEN?: string;
+  ENABLE_GUARDED_SYNC?: string;
+  ENABLE_GUARDED_SYNC_API?: string;
+  ENABLE_SYNC_ADOPTION?: string;
+  GUARDED_SYNC_CUTOVER?: string;
 }
 
 declare global {
