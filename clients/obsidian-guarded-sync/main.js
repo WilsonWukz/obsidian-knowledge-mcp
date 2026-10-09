@@ -494,6 +494,11 @@ class GuardedSyncView extends ItemView {
       await this.review({title:'建立本地初始快照',body:`只对 ${folder}/INSES/ 建立本地版本历史。不会改动笔记，也不会上传。\n存储路径：${this.plugin.store.dir}`,confirm:'初始化',run:()=>this.plugin.engine.initialize()});
     }));
     button(main,'Fetch',()=>this.action(async()=>{const value=await this.plugin.engine.fetch();new Notice('Fetch：'+value.disposition+'；本地文件未改动。');}));
+    button(main,'Check remote mode',()=>this.action(async()=>{
+      if(!this.plugin.engine.remote)throw new SyncError('GATEWAY_NOT_CONFIGURED');
+      const status=await this.plugin.engine.remote.status();
+      new Notice(status.mode==='managed'?'受保护版本库已进入 managed 模式。':'isolated_test：提交只更新隔离历史，不会改变旧 Remotely Save Vault。',7000);
+    }));
     button(main,'Adopt legacy baseline (one-time)',()=>this.action(async()=>{
       const state=this.plugin.engine.state;
       if(!state)throw new SyncError('LOCAL_NOT_INITIALIZED');
@@ -578,7 +583,7 @@ class GuardedSyncView extends ItemView {
         button(previewBox,'Inspect base / local / remote',()=>this.displayConflicts(preview));
       }
     }catch(e){el('p',previewBox,'gs-muted',this.plugin.explain(e));}
-    el('p',remote,'gs-muted','Fetch/Push 需要未来启用的受认证网关；目前线上部署保持关闭。');
+    el('p',remote,'gs-muted','只有 mode=managed 时才能将此视为受保护的正式同步。isolated_test 仅写隔离的不可变版本库。');
   }
   async displayConflicts(preview){const text=preview.conflicts.map(c=>`${c.reason} [${c.groupId||''}]\n`+
     c.paths.map(p=>`${p}\nBASE:\n${c.base[p]??'(absent)'}\nLOCAL:\n${c.local[p]??'(absent)'}\nREMOTE:\n${c.remote[p]??'(absent)'}`).join('\n')).join('\n\n----\n\n');
