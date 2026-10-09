@@ -73,6 +73,17 @@ describe('owner authenticated guarded sync gateway',()=>{
   expect((conflict.body.preview as {conflicts:Array<{reason:string}>}).conflicts
    .some(x=>x.reason==='SEMANTIC_GROUP_OVERLAP')).toBe(true);
  });
+ it('rejects old pre-cutover plans without claiming them',async()=>{
+  const e=config({GUARDED_SYNC_CUTOVER:'true'});
+  const old=await planStoreCall<StoredPlan>(e,'create',{plan:{
+   steps:[{action:'replace_note',path:D,before:'original',before_etag:'legacy-etag',
+    after:'not allowed'}],note:'Legacy R2 plan without a frozen managed HEAD',
+  }});
+  await expect(applyVersionedChanges(e,old.id,old.digest))
+   .rejects.toMatchObject({code:'LEGACY_PLAN_NOT_VALID_AFTER_CUTOVER'});
+  const still=await planStoreCall<StoredPlan>(e,'get',{id:old.id});
+  expect(still.status).toBe('pending');
+ });
  it('Agent cannot publish without separate approval; approved plan commits atomically and idempotently',async()=>{
   const e=config({GUARDED_SYNC_CUTOVER:'true'});
   const before=(await syncRpc<{headId:string}>(e,'status')).headId;
