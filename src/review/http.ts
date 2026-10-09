@@ -31,9 +31,27 @@ function formToken(req:Request,form:FormData):boolean {
   const provided=form.get("csrf");
   return !!expected && typeof provided==="string" && timingSafeEqual(expected,provided);
 }
+/**
+ * Form POSTs can legitimately omit Origin (browser privacy policies and
+ * embedded clients). Reject any explicit foreign/opaque Origin or cross-site
+ * Fetch Metadata, but allow a missing Origin when the random CSRF field
+ * matches the secure, HttpOnly, SameSite=Strict host-only CSRF cookie.
+ *
+ * This method is ONLY an origin safety filter. Caller must still verify
+ * formToken(req, form) BEFORE checking any password or approval proof.
+ */
 function originMatches(req:Request):boolean {
+  const expected=new URL(req.url).origin;
   const origin=req.headers.get("origin");
-  return !!origin && origin===new URL(req.url).origin;
+  const site=req.headers.get("sec-fetch-site");
+  if(site!==null && site!=="same-origin" && site!=="none")return false;
+  if(origin!==null && origin!==expected)return false;
+  const referer=req.headers.get("referer");
+  if(referer!==null){
+    try { if(new URL(referer).origin!==expected)return false; }
+    catch { return false; }
+  }
+  return true;
 }
 function page(body:string,status=200):Response {
   return new Response("<!doctype html><html lang='zh-CN'><head>"+

@@ -274,4 +274,63 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
     }])).rejects.toMatchObject({code:"STABLE_NOTE_ID_REQUIRED"});
   });
 
+  it("accepts genuine browser form POSTs with no Origin when CSRF cookie and field match",async()=>{
+    const e=configured();
+    const path=unique("OriginFreeBrowser");
+    const draft=await planNoteChanges(e,vault(),[
+      {action:"create_note",path,content:"# Login preview should be reachable"},
+    ]);
+    const page=await handleReview(new Request(base+"/review/"+draft.plan_id),e);
+    expect(page?.status).toBe(200);
+    const csrfCookie=(page!.headers.get("set-cookie")??"").split(";")[0];
+    const csrf=csrfCookie.split("=")[1];
+    const view=async (headers:Record<string,string>)=>
+      handleReview(new Request(base+"/review/"+draft.plan_id+"/view",{
+        method:"POST",headers:{"content-type":"application/x-www-form-urlencoded",cookie:csrfCookie,...headers},
+        body:new URLSearchParams({csrf,password:e.AUTH_PASSWORD}),
+      }),e);
+    const chrome=await view({"sec-fetch-site":"same-origin"});
+    expect(chrome?.status).toBe(200);
+    expect(await chrome!.text()).toContain("Login preview should be reachable");
+    const privacy=await view({});
+    expect(privacy?.status).toBe(200);
+    expect(await privacy!.text()).toContain("Login preview should be reachable");
+    // Previewing changes never approves or mutates the vault.
+    expect((await planStoreCall<StoredPlan>(e,"get",{id:draft.plan_id})).status).toBe("pending");
+    expect(await vault().get(path)).toBeNull();
+  });
+
+  it("rejects explicit foreign or opaque Origin and cross-site form POSTs",async()=>{
+    const e=configured();
+    const path=unique("OriginRejected");
+    const draft=await planNoteChanges(e,vault(),[
+      {action:"create_note",path,content:"# Must remain private"},
+    ]);
+    const page=await handleReview(new Request(base+"/review/"+draft.plan_id),e);
+    const csrfCookie=(page!.headers.get("set-cookie")??"").split(";")[0];
+    const csrf=csrfCookie.split("=")[1];
+    for(const headers of [
+      {origin:"https://attacker.example"},
+      {origin:"null"},
+      {"sec-fetch-site":"cross-site"},
+      {"sec-fetch-site":"same-site"},
+      {referer:"https://attacker.example/page"},
+    ]){
+      const res=await handleReview(new Request(base+"/review/"+draft.plan_id+"/view",{
+        method:"POST",
+        headers:{"content-type":"application/x-www-form-urlencoded",cookie:csrfCookie,...headers},
+        body:new URLSearchParams({csrf,password:e.AUTH_PASSWORD}),
+      }),e);
+      expect(res?.status).toBe(403);
+      expect((await res!.text())).toContain("Invalid review request");
+    }
+    const withoutToken=await handleReview(new Request(base+"/review/"+draft.plan_id+"/view",{
+      method:"POST",headers:{"content-type":"application/x-www-form-urlencoded",cookie:csrfCookie},
+      body:new URLSearchParams({csrf:"wrong",password:e.AUTH_PASSWORD}),
+    }),e);
+    expect(withoutToken?.status).toBe(403);
+    expect((await withoutToken!.text())).toContain("CSRF validation failed");
+    expect((await planStoreCall<StoredPlan>(e,"get",{id:draft.plan_id})).status).toBe("pending");
+  });
+
 });
