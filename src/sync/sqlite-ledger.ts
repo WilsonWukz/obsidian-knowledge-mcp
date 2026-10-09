@@ -106,11 +106,13 @@ export class SqliteSyncLedger {
         'INSERT INTO sync_commits(id,parent,tree_id,actor,created_at) VALUES(?,?,?,?,?)',
         commit.id,commit.parents[0]??null,staged.treeId,commit.actor,commit.createdAt);
       if(expected===null){
-        const row=this.storage.sql.exec('INSERT INTO sync_refs(name,head) VALUES(?,?)',HEAD_NAME,commit.id);
-        if(row.rowsWritten!==1)throw new SafeSyncError('HEAD_CAS_FAILED');
+        this.storage.sql.exec('INSERT INTO sync_refs(name,head) VALUES(?,?)',HEAD_NAME,commit.id);
+        // SQL cursor rowsWritten differs across SQLite runtimes. Verify actual
+        // state inside the SAME transaction instead of trusting that counter.
+        if(this.current()!==commit.id)throw new SafeSyncError('HEAD_CAS_FAILED');
       }else{
-        const row=this.storage.sql.exec('UPDATE sync_refs SET head=? WHERE name=? AND head=?',commit.id,HEAD_NAME,expected);
-        if(row.rowsWritten!==1)throw new SafeSyncError('HEAD_CAS_FAILED');
+        this.storage.sql.exec('UPDATE sync_refs SET head=? WHERE name=? AND head=?',commit.id,HEAD_NAME,expected);
+        if(this.current()!==commit.id)throw new SafeSyncError('HEAD_CAS_FAILED');
       }
       return true;
     });
