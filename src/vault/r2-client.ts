@@ -72,6 +72,19 @@ export class R2Client {
     return obj ? obj.etag : null;
   }
 
+  /**
+   * Conditional create. An exact If-None-Match:* precondition is evaluated
+   * atomically by R2, including against concurrent Obsidian/S3 uploads.
+   * Never perform a non-atomic head-then-unconditional-put for reviewed writes.
+   */
+  async putIfAbsent(path: string, body: string): Promise<string | null> {
+    const obj = await this.bucket.put(this.toKey(path), body, {
+      onlyIf: new Headers({ "If-None-Match": "*" }),
+      httpMetadata: { contentType: "text/markdown; charset=utf-8" },
+    });
+    return obj?.etag ?? null;
+  }
+
   async delete(path: string): Promise<void> {
     await this.bucket.delete(this.toKey(path));
   }

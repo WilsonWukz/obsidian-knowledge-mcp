@@ -5,6 +5,7 @@ import { MIN_SECRET_LEN } from "../config";
 import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limit";
 import { log } from "../log";
 import { VERSION } from "../version";
+import { handleReview } from "../review/http";
 
 function html(body: string, status = 200): Response {
   return new Response(body, {
@@ -85,7 +86,7 @@ export default {
     // reflects the *deployed* version immediately (independent of the Durable
     // Object's tool-registry cache). Handy for `curl …/health` deploy checks.
     if (url.pathname === "/health") {
-      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION }), {
+      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION, reviewed_writes_enabled: String(env.ENABLE_REVIEWED_WRITES) === "true" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -98,6 +99,12 @@ export default {
     // Obsidian desktop may still sync normally using separate bucket credentials.
     if (url.pathname === "/upload") {
       return new Response("Not found", { status: 404 });
+    }
+
+    // Owner's separate browser confirmation never mutates R2 directly.
+    if (url.pathname.startsWith("/review/")) {
+      const review = await handleReview(req,env);
+      if (review) return review;
     }
 
     if (url.pathname !== "/authorize") {

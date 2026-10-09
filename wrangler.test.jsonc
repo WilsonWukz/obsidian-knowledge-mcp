@@ -11,13 +11,18 @@
     { "binding": "VAULT", "bucket_name": "synthetic-test-only-vault" }
   ],
   "durable_objects": {
-    "bindings": [{ "name": "MCP_OBJECT", "class_name": "ObsidianMCP" }]
+    "bindings": [
+      { "name": "MCP_OBJECT", "class_name": "ObsidianMCP" },
+      { "name": "REVIEW_PLANS", "class_name": "ReviewPlans" }
+    ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] }
+    { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] },
+    { "tag": "v2", "new_sqlite_classes": ["ReviewPlans"] }
   ],
   "vars": {
     "VAULT_PREFIX": "",
+    "ENABLE_REVIEWED_WRITES": "false",
     "DAILY_NOTE_PATH_TEMPLATE": "Daily Notes/{{YYYY-MM-DD}}.md",
     "WEEKLY_NOTE_PATH_TEMPLATE": "",
     "MONTHLY_NOTE_PATH_TEMPLATE": "",

@@ -14,6 +14,24 @@ test("Cloudflare CI bootstrap is test-vault only, excludes credentials", () => {
   assert.match(config, /CLOUDFLARE_ACCOUNT_ID=a{32}/);
   assert.doesNotMatch(config, /API_TOKEN|AUTH_PASSWORD|SECRET/);
   assert.match(config, /MCP_HOSTNAME=\n/);
+  assert.match(config, /ENABLE_REVIEWED_WRITES=false/);
+});
+test("reviewed writes require an explicit opt-in and a trusted public origin", () => {
+  const config=renderPrivateEnv({
+    accountId:"a".repeat(32),bucketName:"wilson-obsidian-mcp-test",
+    enableReviewedWrites:"true",
+    publicOrigin:"https://obsidian-knowledge-mcp.wilsonkwu.workers.dev",
+  });
+  assert.match(config,/ENABLE_REVIEWED_WRITES=true/);
+  assert.match(config,/SERVICE_BASE_URL=https:\/\/obsidian-knowledge-mcp\.wilsonkwu\.workers\.dev/);
+  assert.throws(()=>renderPrivateEnv({
+    accountId:"a".repeat(32),bucketName:"wilson-obsidian-mcp-test",
+    publicOrigin:"https://attacker.example",
+  }),/Worker public origin/);
+  assert.throws(()=>renderPrivateEnv({
+    accountId:"a".repeat(32),bucketName:"wilson-obsidian-mcp-test",
+    enableReviewedWrites:true,
+  }),/require a verified public Worker origin/);
 });
 test("Cloudflare CI refuses invalid account or production bucket", () => {
   assert.throws(() => renderPrivateEnv({ accountId: "bad", bucketName: "vault-test" }), /Account ID/i);

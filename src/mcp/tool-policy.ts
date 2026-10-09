@@ -19,6 +19,12 @@ export const READ_ONLY_TOOLS = new Set([
   "list_attachments",
 ] as const);
 
-export function canExposeTool(name: string): boolean {
-  return READ_ONLY_TOOLS.has(name as never);
+export const REVIEWED_WRITE_TOOLS = new Set([
+  "plan_note_changes","get_note_plan","apply_note_changes",
+  "cancel_note_plan","plan_note_undo","list_note_history",
+] as const);
+
+export function canExposeTool(name: string, reviewedWrites = false): boolean {
+  return READ_ONLY_TOOLS.has(name as never) ||
+    reviewedWrites && REVIEWED_WRITE_TOOLS.has(name as never);
 }
