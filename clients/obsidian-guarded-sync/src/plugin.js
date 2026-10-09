@@ -21,7 +21,12 @@ const friendly={
   ADOPTION_DISABLED:'云端尚未显式启用一次性迁移许可。',
   GENESIS_MISMATCH:'云端与 Mac 的初始文件不完全一致。请先核对，不要强制覆盖。',
   SOURCE_CHANGED:'迁移中云端文件发生变化，已中止；先停用旧同步写入者。',
-  KEYCHAIN_TOKEN_MISSING:'系统钥匙串中找不到授权凭证；密钥不会保存在 Vault。',
+  KEYCHAIN_TOKEN_MISSING:'钥匙串中没有与当前 Vault identity 匹配的凭证；请检查服务名及账户名。',
+  KEYCHAIN_TOKEN_INVALID:'钥匙串项目存在，但密码为空或长度不足 32 字符；请检查保存的值。',
+  KEYCHAIN_COMMAND_UNAVAILABLE:'无法启动 macOS /usr/bin/security 命令，请检查系统环境。',
+  KEYCHAIN_ACCESS_DENIED:'Obsidian 无法读取该钥匙串项目；请在 macOS 授权提示中选择允许。',
+  KEYCHAIN_ACCESS_TIMEOUT:'等待钥匙串访问授权超时；请重新检查并及时处理 macOS 授权提示。',
+  KEYCHAIN_LOOKUP_FAILED:'钥匙串命令执行失败，但不一定是凭证缺失；请使用开发者工具检查本机权限。',
   REMOTE_NOT_INITIALIZED:'远端受控版本库尚未经过审核初始化，不能直接从旧 R2 内容推送。',
   UNRELATED_HISTORY:'本地与云端没有经过验证的共同祖先。禁止覆盖；请先完成迁移对账。',
   WORKTREE_DIRTY:'本地文件与已提交快照不同。先检查 Status、Stage 和 Commit；禁止隐式覆盖。',
@@ -113,15 +118,39 @@ class ObsidianVaultAdapter {
     await this.app.fileManager.trashFile(file);
   }
 }
+// macOS GUI apps may have a different PATH from Terminal. Never invoke a shell,
+// and never log stdout: it contains the actual owner credential.
+const KEYCHAIN_SECURITY_BIN='/usr/bin/security';
+async function readOwnerKeychainToken(vaultId,run=execFileAsync,platform=process.platform){
+  if(platform!=='darwin')throw new SyncError('MAC_ONLY');
+  let response;
+  try{
+    // Give a human time to approve the first macOS Keychain access prompt.
+    response=await run(KEYCHAIN_SECURITY_BIN,
+      ['find-generic-password','-s',SERVICE,'-a',vaultId,'-w'],
+      {timeout:30000,maxBuffer:4096,encoding:'utf8'});
+  }catch(e){
+    const code=e?.code;
+    if(code==='ENOENT')throw new SyncError('KEYCHAIN_COMMAND_UNAVAILABLE');
+    if(code==='EACCES'||code==='EPERM')throw new SyncError('KEYCHAIN_ACCESS_DENIED');
+    if(e?.killed||e?.signal==='SIGTERM'||code==='ETIMEDOUT')
+      throw new SyncError('KEYCHAIN_ACCESS_TIMEOUT');
+    const diagnostic=typeof e?.stderr==='string'?e.stderr:'';
+    if(/specified item could not be found|errSecItemNotFound|item not found/i.test(diagnostic))
+      throw new SyncError('KEYCHAIN_TOKEN_MISSING');
+    if(/user interaction is not allowed|authorization failed|operation was canceled|access denied/i.test(diagnostic))
+      throw new SyncError('KEYCHAIN_ACCESS_DENIED');
+    // A bare nonzero exit code has multiple possible causes. Do NOT claim that
+    // the item is missing, and do not leak stderr or the secret in a notice.
+    throw new SyncError('KEYCHAIN_LOOKUP_FAILED');
+  }
+  const token=typeof response?.stdout==='string'?response.stdout.trim():'';
+  if(token.length<32)throw new SyncError('KEYCHAIN_TOKEN_INVALID');
+  return token;
+}
 class GatewayRemote {
   constructor(url,vaultId){this.url=validateEndpoint(url);this.vaultId=vaultId;}
-  async token(){
-    if(process.platform!=='darwin')throw new SyncError('MAC_ONLY');
-    try{
-      const r=await execFileAsync('security',['find-generic-password','-s',SERVICE,'-a',this.vaultId,'-w'],{timeout:7000,maxBuffer:4096,encoding:'utf8'});
-      const token=r.stdout.trim();if(token.length<32)throw new SyncError('KEYCHAIN_TOKEN_INVALID');return token;
-    }catch(e){if(e instanceof SyncError)throw e;throw new SyncError('KEYCHAIN_TOKEN_MISSING');}
-  }
+  token(){return readOwnerKeychainToken(this.vaultId);}
   async rpc(op,args={}){
     if(!this.url)throw new SyncError('GATEWAY_NOT_CONFIGURED');
     const key=await this.token();
@@ -304,4 +333,4 @@ class GuardedSyncPlugin extends Plugin {
 }
 module.exports=GuardedSyncPlugin;
 module.exports.default=GuardedSyncPlugin;
-module.exports._test={DiskStore,ObsidianVaultAdapter,GatewayRemote,validateEndpoint,vaultIdentity};
+module.exports._test={DiskStore,ObsidianVaultAdapter,GatewayRemote,validateEndpoint,vaultIdentity,readOwnerKeychainToken};
