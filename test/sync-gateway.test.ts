@@ -5,6 +5,9 @@ import {makeGenesis} from '../src/sync/protocol';
 import {syncRpc} from '../src/sync/rpc';
 import {planVersionedChanges,applyVersionedChanges} from '../src/sync/reviewed';
 import {planStoreCall,type StoredPlan} from '../src/review/store';
+import AuthHandler from '../src/auth/handler';
+import {makeReadableVault} from '../src/sync/read-vault';
+import {buildVaultConfig} from '../src/config';
 const token='synthetic-test-token-0123456789-abcdef-0123456789';
 const M='INSES/M00-关系总览.md',P='INSES/P21-Evidence.md',D='INSES/Benchmark.md';
 const initial={[M]:'- [[P21#^R-P21-01]]：旧关系',[P]:'### R-P21-01\n初始证据',[D]:'Dataset old'};
@@ -31,6 +34,12 @@ describe('owner authenticated guarded sync gateway',()=>{
   expect(ok.status).toBe(200);
   expect(ok.body.mode).toBe('isolated_test');
   expect(ok.headers.get('cache-control')).toBe('no-store');
+  // Exercise the actual default OAuth fallback route, not only the helper.
+  const routed=await AuthHandler.fetch(request('status'),config());
+  expect(routed.status).toBe(200);
+  expect((await routed.json() as {mode:string}).mode).toBe('isolated_test');
+  expect(()=>makeReadableVault(config({GUARDED_SYNC_CUTOVER:'true',
+    ENABLE_GUARDED_SYNC:'false'}),buildVaultConfig(config()))).toThrow();
  });
  it('denies direct public bootstrap, privileged file read and adoption unless explicitly enabled',async()=>{
   expect((await send('bootstrap',{files:initial})).status).toBe(403);
