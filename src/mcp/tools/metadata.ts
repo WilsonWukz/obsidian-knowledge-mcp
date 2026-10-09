@@ -1,5 +1,6 @@
 import type { R2Client } from "../../vault/r2-client";
 import { type ToolResult, type VaultConfig, err, ok } from "../../types";
+import { isSafeMarkdownPath } from "../note-path";
 import {
   MalformedFrontmatterError,
   buildPermalink,
@@ -21,6 +22,7 @@ export async function parseFrontmatter(
 ): Promise<
   ToolResult<{ frontmatter: Record<string, unknown>; etag: string; permalink: string | null }>
 > {
+  if (!isSafeMarkdownPath(args.path)) return err("invalid_path", { path: args.path });
   const obj = await c.getWithEtag(args.path);
   if (obj === null) return err("not_found", { path: args.path });
   const id = extractIdFromFrontmatter(obj.body);
@@ -117,6 +119,7 @@ export async function generatePermalink(
   cfg: VaultConfig,
   args: { path: string },
 ): Promise<ToolResult<{ path: string; permalink: string; kind: "id" | "path" }>> {
+  if (!isSafeMarkdownPath(args.path)) return err("invalid_path", { path: args.path });
   if (!cfg.permalinkBaseUrl) return err("permalink_disabled", { path: args.path });
   const body = await c.get(args.path);
   if (body === null) return err("not_found", { path: args.path });

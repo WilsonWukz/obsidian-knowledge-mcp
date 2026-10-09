@@ -1,6 +1,7 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { NotePathInput } from "./note-path";
 import type { Props, ToolResult, VaultConfig } from "../types";
 import { buildVaultConfig } from "../config";
 import { VERSION } from "../version";
@@ -47,7 +48,9 @@ import {
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 
-const NotePath = z.string().min(1).regex(/\.md$/i, "path must end with .md");
+// Do not publish a regex pattern; some MCP clients interpret it differently.
+// read_note / parse_frontmatter / generate_permalink enforce .md server-side.
+const NotePath = NotePathInput;
 
 // Cadence selector for the periodic-note tools. z.enum needs a literal tuple;
 // the assignment below is a compile-time guard that it stays exactly in sync
@@ -242,7 +245,9 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     // Six owner-reviewed tools. The former upstream direct-write tools are
     // still denied even when the host enables reviewed writes explicitly.
-    const reviewedPath = z.string().min(10).max(220).endsWith(".md");
+    // Transport schema deliberately omits endsWith() for cross-client compatibility.
+    // review/plan.ts validateWritablePath() still enforces INSES/*.md.
+    const reviewedPath = z.string().min(10).max(220);
     const reviewedContent = z.string().max(96_000);
     const yamlScalar = z.union([z.string().max(500),z.number(),z.boolean()]);
     const yamlValue = z.union([yamlScalar,z.array(yamlScalar).max(40)]);

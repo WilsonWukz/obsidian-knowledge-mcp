@@ -2,6 +2,7 @@ import type { R2Client } from "../../vault/r2-client";
 import { type ToolResult, type VaultConfig, err, ok } from "../../types";
 import type { VaultIndex } from "../../vault/index-store";
 import { log } from "../../log";
+import { isSafeMarkdownPath } from "../note-path";
 import {
   MalformedFrontmatterError,
   buildPermalink,
@@ -42,6 +43,7 @@ export async function readNote(
     frontmatter: Record<string, unknown>;
   }>
 > {
+  if (!isSafeMarkdownPath(args.path)) return err("invalid_path", { path: args.path });
   const obj = await c.getWithEtag(args.path);
   if (obj === null) return err("not_found", { path: args.path });
   const body = obj.body;
