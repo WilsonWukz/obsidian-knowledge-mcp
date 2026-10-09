@@ -8,21 +8,28 @@
     { "binding": "OAUTH_KV", "id": "11111111111111111111111111111111" }
   ],
   "r2_buckets": [
-    { "binding": "VAULT", "bucket_name": "synthetic-test-only-vault" }
+    { "binding": "VAULT", "bucket_name": "synthetic-test-only-vault" },
+    { "binding": "SYNC_OBJECTS", "bucket_name": "synthetic-guarded-sync-objects" }
   ],
   "durable_objects": {
     "bindings": [
       { "name": "MCP_OBJECT", "class_name": "ObsidianMCP" },
-      { "name": "REVIEW_PLANS", "class_name": "ReviewPlans" }
+      { "name": "REVIEW_PLANS", "class_name": "ReviewPlans" },
+      { "name": "SYNC_LEDGER", "class_name": "GuardedSyncLedger" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] },
-    { "tag": "v2", "new_sqlite_classes": ["ReviewPlans"] }
+    { "tag": "v2", "new_sqlite_classes": ["ReviewPlans"] },
+    { "tag": "v3", "new_sqlite_classes": ["GuardedSyncLedger"] }
   ],
   "vars": {
     "VAULT_PREFIX": "",
     "ENABLE_REVIEWED_WRITES": "false",
+    "ENABLE_GUARDED_SYNC": "true",
+    "ENABLE_GUARDED_SYNC_API": "false",
+    "ENABLE_SYNC_ADOPTION": "false",
+    "GUARDED_SYNC_CUTOVER": "false",
     "DAILY_NOTE_PATH_TEMPLATE": "Daily Notes/{{YYYY-MM-DD}}.md",
     "WEEKLY_NOTE_PATH_TEMPLATE": "",
     "MONTHLY_NOTE_PATH_TEMPLATE": "",

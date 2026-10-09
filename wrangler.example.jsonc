@@ -15,21 +15,28 @@
     { "binding": "OAUTH_KV", "id": "${OAUTH_KV_ID}" }
   ],
   "r2_buckets": [
-    { "binding": "VAULT", "bucket_name": "${R2_BUCKET_NAME}" }
+    { "binding": "VAULT", "bucket_name": "${R2_BUCKET_NAME}" },
+    { "binding": "SYNC_OBJECTS", "bucket_name": "${SYNC_OBJECTS_BUCKET_NAME}" }
   ],
   "durable_objects": {
     "bindings": [
       { "name": "MCP_OBJECT", "class_name": "ObsidianMCP" },
-      { "name": "REVIEW_PLANS", "class_name": "ReviewPlans" }
+      { "name": "REVIEW_PLANS", "class_name": "ReviewPlans" },
+      { "name": "SYNC_LEDGER", "class_name": "GuardedSyncLedger" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] },
-    { "tag": "v2", "new_sqlite_classes": ["ReviewPlans"] }
+    { "tag": "v2", "new_sqlite_classes": ["ReviewPlans"] },
+    { "tag": "v3", "new_sqlite_classes": ["GuardedSyncLedger"] }
   ],
   "vars": {
     "VAULT_PREFIX": "${VAULT_PREFIX}",
     "ENABLE_REVIEWED_WRITES": "${ENABLE_REVIEWED_WRITES}",
+    "ENABLE_GUARDED_SYNC": "${ENABLE_GUARDED_SYNC}",
+    "ENABLE_GUARDED_SYNC_API": "${ENABLE_GUARDED_SYNC_API}",
+    "ENABLE_SYNC_ADOPTION": "${ENABLE_SYNC_ADOPTION}",
+    "GUARDED_SYNC_CUTOVER": "${GUARDED_SYNC_CUTOVER}",
     // Periodic-note path templates, one per cadence. Tokens: {{YYYY}} {{MM}}
     // {{DD}} {{Q}} {{WW}} (ISO week) {{GGGG}} (ISO week-year) {{YYYY-MM-DD}}.
     // An empty value disables that cadence (period_not_configured).

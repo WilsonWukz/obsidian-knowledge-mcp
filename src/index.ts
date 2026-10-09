@@ -3,7 +3,9 @@ import { ObsidianMCP } from "./mcp/agent";
 import { ReviewPlans } from "./review/store";
 import AuthHandler from "./auth/handler";
 
-export { ObsidianMCP, ReviewPlans };
+import { GuardedSyncLedger } from "./sync/durable-object";
+
+export { ObsidianMCP, ReviewPlans, GuardedSyncLedger };
 
 export default new OAuthProvider({
   apiRoute: "/mcp",

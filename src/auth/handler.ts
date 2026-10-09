@@ -6,6 +6,7 @@ import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limi
 import { log } from "../log";
 import { VERSION } from "../version";
 import { handleReview } from "../review/http";
+import {handleGuardedSync} from "../sync/gateway";
 
 function html(body: string, status = 200): Response {
   return new Response(body, {
@@ -86,7 +87,7 @@ export default {
     // reflects the *deployed* version immediately (independent of the Durable
     // Object's tool-registry cache). Handy for `curl …/health` deploy checks.
     if (url.pathname === "/health") {
-      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION, reviewed_writes_enabled: String(env.ENABLE_REVIEWED_WRITES) === "true" }), {
+      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION, reviewed_writes_enabled: String(env.ENABLE_REVIEWED_WRITES) === "true", guarded_sync_api_enabled: String(env.ENABLE_GUARDED_SYNC_API) === "true" && String(env.ENABLE_GUARDED_SYNC) === "true" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -97,6 +98,9 @@ export default {
     // unaffected.
     // v0.1 read-only deployment: never expose a direct HTTP upload route.
     // Obsidian desktop may still sync normally using separate bucket credentials.
+    // Owner-only versioned sync. No OAuth bearer token or public bootstrap.
+    if(url.pathname === "/sync/v1")return handleGuardedSync(req,env);
+
     if (url.pathname === "/upload") {
       return new Response("Not found", { status: 404 });
     }

@@ -6,6 +6,10 @@ import { buildVaultConfig } from "../config";
 import { VERSION } from "../version";
 import { canExposeTool } from "./tool-policy";
 import { PlanError } from "../review/plan";
+import {SafeSyncError} from "../sync/protocol.ts";
+import {syncCutover} from "../sync/rpc.ts";
+import {makeReadableVault} from "../sync/read-vault";
+import {planVersionedChanges,applyVersionedChanges,prepareVersionedUndo} from "../sync/reviewed";
 import { planNoteChanges, getNotePlan, cancelNotePlan, listNoteHistory, applyNotePlan, prepareUndo } from "../review/operations";
 import { buildNoteGraph } from "../vault/knowledge-graph";
 import { R2Client } from "../vault/r2-client";
@@ -92,7 +96,7 @@ function okJson(value: unknown): McpResponse {
 
 async function reviewed<T>(work: () => Promise<T>): Promise<McpResponse> {
   try { return okJson(await work()); }
-  catch (e) { return errResponse(e instanceof PlanError ? e.code : "REVIEWED_WRITE_ERROR"); }
+  catch (e) { return errResponse(e instanceof PlanError||e instanceof SafeSyncError ? e.code : "REVIEWED_WRITE_ERROR"); }
 }
 
 function fromToolResult<T>(r: ToolResult<T>, render: (value: T) => string): McpResponse {
@@ -133,7 +137,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
   private _index?: VaultIndex;
 
   private get vault(): R2Client {
-    return new R2Client(this.env.VAULT, this.cfg);
+    return makeReadableVault(this.env, this.cfg);
   }
 
   private get cfg(): VaultConfig {
@@ -257,7 +261,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
       "PREVIEW: prepare 1-5 exact note changes restricted to INSES/ with before/after Markdown. No R2 write. Owner must review in an independent password-protected browser before apply_note_changes.",
       {actions:reviewedActions},
       async ({actions}) => instrument("plan_note_changes",async () =>
-        reviewed(() => planNoteChanges(this.env,this.vault,actions))),
+        reviewed(() => syncCutover(this.env)?planVersionedChanges(this.env,actions):planNoteChanges(this.env,this.vault,actions))),
     );
     expose(
       "get_note_plan",
@@ -285,15 +289,17 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
       "WRITE: execute an approved exact note plan with R2 conditional writes and durable receipts. Never automatically retry uncertain, partial or interrupted operations. No multi-file atomicity.",
       {plan_id:reviewedPlanId,digest:z.string().regex(/^[a-f0-9]{64}$/)},
       async ({plan_id,digest}) => instrument("apply_note_changes",async () =>
-        reviewed(() => applyNotePlan(this.env,this.vault,plan_id,digest,
-          (path,content,etag)=>this.index.upsertFromContent(path,content,etag)))),
+        reviewed(() => syncCutover(this.env)
+          ?applyVersionedChanges(this.env,plan_id,digest)
+          :applyNotePlan(this.env,this.vault,plan_id,digest,
+            (path,content,etag)=>this.index.upsertFromContent(path,content,etag)))),
     );
     expose(
       "plan_note_undo",
       "PREVIEW: separately approved restoration of successfully applied changes to existing notes, rejecting subsequent edits. Cannot auto-delete newly created notes.",
       {plan_id:reviewedPlanId},
       async ({plan_id}) => instrument("plan_note_undo",async () =>
-        reviewed(() => prepareUndo(this.env,this.vault,plan_id))),
+        reviewed(() => syncCutover(this.env)?prepareVersionedUndo(this.env,plan_id):prepareUndo(this.env,this.vault,plan_id))),
     );
 
     expose(

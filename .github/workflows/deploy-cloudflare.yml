@@ -22,6 +22,26 @@ on:
         type: boolean
         required: true
         default: false
+      enable_guarded_sync_api:
+        description: "Enable isolated owner-authenticated sync API (no live Vault cutover)"
+        type: boolean
+        required: true
+        default: false
+      enable_sync_adoption:
+        description: "Temporarily allow owner-confirmed legacy baseline adoption"
+        type: boolean
+        required: true
+        default: false
+      enable_guarded_sync_cutover:
+        description: "Switch managed INSES reads/writes to versioned HEAD (after revocation)"
+        type: boolean
+        required: true
+        default: false
+      legacy_writers_revoked:
+        description: "I have revoked direct R2/S3 writers and disabled Remotely Save on INSES/"
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -48,7 +68,9 @@ jobs:
         run: |
           set -euo pipefail
           npm test
-          node --test test-node/*.node.mjs
+          node --experimental-strip-types --test test-node/*.node.mjs
+          node --experimental-strip-types --test clients/obsidian-guarded-sync/tests/*.cjs
+          node clients/obsidian-guarded-sync/scripts/build.mjs
           npx wrangler types --config wrangler.test.jsonc
           npx tsc --noEmit
 
@@ -58,6 +80,11 @@ jobs:
           R2_BUCKET_NAME: "${{ inputs.bucket_name }}"
           WORKER_PUBLIC_ORIGIN: "${{ inputs.public_origin }}"
           ENABLE_REVIEWED_WRITES: "${{ inputs.enable_reviewed_writes }}"
+          ENABLE_GUARDED_SYNC_API: "${{ inputs.enable_guarded_sync_api }}"
+          ENABLE_SYNC_ADOPTION: "${{ inputs.enable_sync_adoption }}"
+          GUARDED_SYNC_CUTOVER: "${{ inputs.enable_guarded_sync_cutover }}"
+          LEGACY_WRITERS_REVOKED: "${{ inputs.legacy_writers_revoked }}"
+          OBSIDIAN_SYNC_OWNER_TOKEN: "${{ secrets.OBSIDIAN_SYNC_OWNER_TOKEN }}"
           CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}"
           OBSIDIAN_MCP_AUTH_PASSWORD: "${{ secrets.OBSIDIAN_MCP_AUTH_PASSWORD }}"
         run: node scripts/ci-bootstrap.mjs
@@ -93,6 +120,17 @@ jobs:
           test -n "$MCP_LOGIN_PASSWORD"
           printf '%s' "$MCP_LOGIN_PASSWORD" | npx wrangler secret put AUTH_PASSWORD --config wrangler.jsonc
 
+      - name: Install private owner sync token (only when API is enabled)
+        if: inputs.enable_guarded_sync_api
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "${{ inputs.account_id }}"
+          CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+          OWNER_SYNC_TOKEN: "${{ secrets.OBSIDIAN_SYNC_OWNER_TOKEN }}"
+        run: |
+          set -euo pipefail
+          test "${#OWNER_SYNC_TOKEN}" -ge 32
+          printf '%s' "$OWNER_SYNC_TOKEN" | npx wrangler secret put SYNC_OWNER_TOKEN --config wrangler.jsonc
+
       - name: Verify browser password form reached without any real approval
         if: inputs.enable_reviewed_writes
         run: |
@@ -102,6 +140,7 @@ jobs:
         env:
           R2_BUCKET_NAME: "${{ inputs.bucket_name }}"
           ENABLE_REVIEWED_WRITES: "${{ inputs.enable_reviewed_writes }}"
+          ENABLE_GUARDED_SYNC_API: "${{ inputs.enable_guarded_sync_api }}"
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --location --retry 5 --retry-delay 2 --max-time 15 "$WORKER_URL/health" > health.json
@@ -109,8 +148,9 @@ jobs:
             import { readFileSync } from "node:fs";
             const body = JSON.parse(readFileSync("health.json", "utf8"));
             const expected = process.env.ENABLE_REVIEWED_WRITES === "true";
-            if (body.ok !== true || body.version !== "0.2.0" ||
-                body.reviewed_writes_enabled !== expected)
+            if (body.ok !== true || body.version !== "0.3.0" ||
+                body.reviewed_writes_enabled !== expected ||
+                body.guarded_sync_api_enabled !== (process.env.ENABLE_GUARDED_SYNC_API === "true"))
               throw Error("Worker version or reviewed-write safety mode disagrees with workflow input");
             console.log("Public health check successful, version:", body.version,
               "reviewed writes:", body.reviewed_writes_enabled);
