@@ -103,9 +103,12 @@ jobs:
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
             const body = JSON.parse(readFileSync("health.json", "utf8"));
-            if (body.ok !== true || typeof body.version !== "string")
-              throw Error("Worker health check failed");
-            console.log("Public health check successful, version:", body.version);
+            const expected = process.env.ENABLE_REVIEWED_WRITES === "true";
+            if (body.ok !== true || body.version !== "0.2.0" ||
+                body.reviewed_writes_enabled !== expected)
+              throw Error("Worker version or reviewed-write safety mode disagrees with workflow input");
+            console.log("Public health check successful, version:", body.version,
+              "reviewed writes:", body.reviewed_writes_enabled);
           '
           {
             echo "### Obsidian Knowledge MCP deployed"
