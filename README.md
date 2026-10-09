@@ -1,5 +1,18 @@
 # Obsidian Knowledge MCP
 
+## v0.3 Guarded Sync (opt-in; default OFF)
+
+The Git-like guarded sync prototype is implemented behind **independent flags**. The existing Remotely Save/R2 and previously reviewed MCP workflows are unchanged when the flags are disabled. The protected `INSES/` cutover requires manually revoking legacy direct R2 credentials; merging this repository or deploying default settings **does not** activate protected sync.
+
+- Versioned Mac plugin (local Status/Stage/Commit/Fetch/Merge/Push); `clients/obsidian-guarded-sync/`
+- Dedicated immutable R2 sync object bucket + SQLite Durable Object atomic HEAD
+- Owner-only, HTTPS, token-gated `POST /sync/v1` — no public bootstrap or Agent impersonation
+- One-time verified adoption from the old Vault using the exact Mac genesis digest
+- Server-derived semantic relation dependencies and frozen, separately approved Agent writes
+- Managed read overlay for note search, graph and note content during cutover
+
+**Start with the safety and manual deployment guide:** [docs/GUARDED_SYNC_PHASE_D.md](docs/GUARDED_SYNC_PHASE_D.md). Do not copy private research notes, owner tokens, passwords or S3 keys into GitHub.
+
 [中文部署指引](docs/CLOUDFLARE_SETUP.zh-CN.md) · [Mac 双向同步验收](docs/MAC_BIDIRECTIONAL_SYNC.zh-CN.md) · [Security](SECURITY.md)
 
 **v0.2.0 — Cloudflare R2 research vault with optional, independently approved note writes.**
