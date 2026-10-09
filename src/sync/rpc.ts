@@ -4,7 +4,9 @@ export function syncEnabled(env:Env):boolean{
  return String(env.ENABLE_GUARDED_SYNC)==='true'&&!!env.SYNC_LEDGER&&!!env.SYNC_OBJECTS;
 }
 export function syncCutover(env:Env):boolean{
- return syncEnabled(env)&&String(env.GUARDED_SYNC_CUTOVER)==='true';
+ const wantsManaged=String(env.GUARDED_SYNC_CUTOVER)==='true';
+ if(wantsManaged&&!syncEnabled(env))throw new SafeSyncError('CUTOVER_MISCONFIGURED');
+ return wantsManaged;
 }
 export async function syncRpc<T extends Record<string,unknown>>(
  env:Env,op:string,params:Record<string,unknown>={},
