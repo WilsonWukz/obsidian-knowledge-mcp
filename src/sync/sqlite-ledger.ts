@@ -146,6 +146,8 @@ export class SqliteSyncLedger {
     const base=await this.get(input.baseId);
     const current=await this.get(expected);
     const localChanges=diffSnapshots(base.files,input.localFiles);
+    if(localChanges.some(c=>c.after===null))
+      throw new SafeSyncError("DELETE_NEEDS_MANUAL_REVIEW","Managed deletion is disabled until a separate audited deletion protocol exists");
     const remoteGroups=await this.remoteGroupsSince(input.baseId,expected);
     if(!localChanges.length){
       return {status:'already_current',headId:expected,
