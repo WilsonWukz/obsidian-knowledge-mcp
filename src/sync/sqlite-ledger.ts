@@ -10,6 +10,7 @@ import {
   type Actor, type SyncCommit, type MergePreview,
 } from './protocol.ts';
 import { SyncObjectStore, type StagedCommit } from './object-store.ts';
+import {deriveServerGroups} from './semantics.ts';
 
 export interface SqlResult { toArray():Array<Record<string,unknown>>; rowsWritten:number }
 export interface SyncSql {
@@ -150,14 +151,16 @@ export class SqliteSyncLedger {
       return {status:'already_current',headId:expected,
         preview:threeWayMerge(base.files,base.files,current.files,[],remoteGroups)};
     }
-    const localGroups=validateGroups(input.groups,localChanges.map(x=>x.path));
+    // Client-declared groups cannot bypass semantic conflict detection.
+    const localGroups=deriveServerGroups(base.files,input.localFiles);
     const preview=threeWayMerge(base.files,input.localFiles,current.files,localGroups,remoteGroups);
     if(preview.disposition==='blocked')return {status:'conflict',headId:expected,preview};
     if(!preview.merged)throw new SafeSyncError('MERGE_RESULT_MISSING');
     const changes=diffSnapshots(current.files,preview.merged);
     if(!changes.length)return {status:'already_current',headId:expected,preview};
     if(changes.length>5)throw new SafeSyncError('TOO_MANY_FILES');
-    const groups=localGroups.filter(g=>g.paths.some(p=>changes.some(c=>c.path===p)));
+    // Recompute after merge against the actual authoritative parent tree.
+    const groups=deriveServerGroups(current.files,preview.merged);
     // Always create a new single-parent commit against the current remote
     // head; do not update old objects nor replay local edits blindly.
     const commit=await makeCommit({parent:current,files:preview.merged,
