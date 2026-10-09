@@ -27,7 +27,9 @@ export function viewPlan(env:Env, row:StoredPlan):PlanView {
     ...(row.plan.undo_of?{undo_of:row.plan.undo_of}:{}),
     warning:row.plan.note,
     mac_sync_status:row.status==="applied"?"not_verified":"not_applicable",
-    mac_sync_instruction:"In Mac Obsidian, run Remotely Save bidirectional sync to pull new cloud notes; check for conflicts and verify contents. Cloud write does not guarantee Mac synchronization.",
+    mac_sync_instruction:String(env.GUARDED_SYNC_CUTOVER)==="true"
+      ?"Use Guarded Sync Fetch / Review Pull, not Remotely Save. The cloud HEAD update is not evidence of a completed local pull."
+      :"In Mac Obsidian, run Remotely Save bidirectional sync to pull new cloud notes; check for conflicts and verify contents. Cloud write does not guarantee Mac synchronization.",
   };
 }
 export async function planNoteChanges(env:Env,vault:R2Client,actions:unknown):Promise<PlanView> {
