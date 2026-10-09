@@ -94,6 +94,9 @@ function previewPage(plan:StoredPlan,proof:string,csrf:string):Response {
     "<form method='post' action='/review/"+encodeURIComponent(plan.id)+"/approve'>"+
     "<input type='hidden' name='csrf' value='"+escapeHtml(csrf)+"'>"+
     "<input type='hidden' name='proof' value='"+escapeHtml(proof)+"'>"+
+    "<label><input type='checkbox' name='mac_ack' value='yes' required> "+
+    "I have synced or backed up pending Mac changes to the affected files, "+
+    "and understand that offline edits may still conflict.</label><p></p>"+
     "<button type='submit'>Approve exact changes</button></form>"+
     "<p>You may close this page without approving; the plan will expire.</p>",
   );
@@ -140,6 +143,12 @@ export async function handleReview(req:Request,env:Env):Promise<Response|null> {
     }
   }
   if(route==="approve"){
+    // The browser must actively acknowledge potential pending offline Mac edits.
+    // The checkbox is not a remote-device attestation; it only prevents casual
+    // approval without the explicit local-sync warning.
+    if(form.get("mac_ack")!=="yes"){
+      return noAccess("Please confirm Mac sync / independent backup before approving",403);
+    }
     const provided=form.get("proof"), token=cookie(req,PROOF_COOKIE);
     if(typeof provided!=="string" || !token || !timingSafeEqual(provided,token))
       return noAccess("Review session is missing or expired",403);

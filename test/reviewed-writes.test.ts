@@ -38,9 +38,14 @@ async function reviewInBrowser(id:string, wrong=false){
   const proof=/name='proof' value='([^']+)'/.exec(html)?.[1];
   expect(proof).toBeTruthy();
   const proofCookie=(preview!.headers.get("set-cookie")||"").split(";")[0];
-  const approval=await handleReview(new Request(base+"/review/"+id+"/approve",{
+  const missingAck=await handleReview(new Request(base+"/review/"+id+"/approve",{
     method:"POST",headers:{...headers,cookie:csrfCookie+"; "+proofCookie},
     body:new URLSearchParams({csrf,proof:proof!}),
+  }),e);
+  expect(missingAck?.status).toBe(403);
+  const approval=await handleReview(new Request(base+"/review/"+id+"/approve",{
+    method:"POST",headers:{...headers,cookie:csrfCookie+"; "+proofCookie},
+    body:new URLSearchParams({csrf,proof:proof!,mac_ack:"yes"}),
   }),e);
   expect(approval?.status).toBe(200);
 }
@@ -188,4 +193,85 @@ describe("Obsidian v0.2 reviewed R2 writes (synthetic vault only)",()=>{
     expect(row.status).toBe("cancelled");
     await expect(applyNotePlan(e,vault(),p.plan_id,p.digest)).rejects.toMatchObject({code:"OWNER_APPROVAL_REQUIRED"});
   });
+  it("the independent approval preview escapes HTML in an AI-authored note", async()=>{
+    const e=configured(),path=unique("UnsafeMarkup");
+    const raw="<img src=x onerror=alert(1)> & test";
+    const draft=await planNoteChanges(e,vault(),[{action:"create_note",path,content:raw}]);
+    const res=await handleReview(new Request(base+"/review/"+draft.plan_id),e);
+    const csrfCookie=(res!.headers.get("set-cookie")??"").split(";")[0];
+    const csrf=csrfCookie.split("=")[1];
+    const post=await handleReview(new Request(base+"/review/"+draft.plan_id+"/view",{
+      method:"POST",headers:{"content-type":"application/x-www-form-urlencoded","origin":base,"cookie":csrfCookie},
+      body:new URLSearchParams({csrf,password:e.AUTH_PASSWORD}),
+    }),e);
+    expect(post?.status).toBe(200);
+    const html=await post!.text();
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain("<img src=x onerror=alert(1)>");
+    expect(html).toContain("&amp; test");
+    expect((await planStoreCall<StoredPlan>(e,"get",{id:draft.plan_id})).status).toBe("pending");
+  });
+
+  it("concurrent independent clients cannot claim the same approved plan twice", async()=>{
+    const e=configured(),path=unique("Concurrent");
+    const p=await planNoteChanges(e,vault(),[{action:"create_note",path,content:"# concurrency"}]);
+    await directApproval(p.plan_id,p.digest);
+    const [a,b]=await Promise.allSettled([
+      planStoreCall<StoredPlan & {claimed:boolean}>(e,"claim",{id:p.plan_id,digest:p.digest}),
+      planStoreCall<StoredPlan & {claimed:boolean}>(e,"claim",{id:p.plan_id,digest:p.digest}),
+    ]);
+    const successes=[a,b].filter(x=>x.status==="fulfilled");
+    expect(successes).toHaveLength(1);
+    const claimed=successes[0] as PromiseFulfilledResult<StoredPlan & {claimed:boolean}>;
+    expect(claimed.value.claimed).toBe(true);
+    const denied=[a,b].filter(x=>x.status==="rejected") as PromiseRejectedResult[];
+    expect(denied).toHaveLength(1);
+    expect(denied[0].reason).toMatchObject({code:"OWNER_APPROVAL_REQUIRED"});
+    expect((await planStoreCall<StoredPlan>(e,"get",{id:p.plan_id})).status).toBe("applying");
+  });
+
+  it("multi-note conflicts remain partial and cannot be re-applied automatically", async()=>{
+    const e=configured(),v=vault(),first=unique("PartialOne"),second=unique("PartialTwo");
+    const p=await planNoteChanges(e,v,[
+      {action:"create_note",path:first,content:"# first"},
+      {action:"create_note",path:second,content:"# second"},
+    ]);
+    await directApproval(p.plan_id,p.digest);
+    let completedFirst=false;
+    const raced={
+      getWithEtag:async (path:string)=>{
+        if(path===second && completedFirst){
+          return {body:"# Mac change",etag:"unexpected-other-writer"};
+        }
+        return v.getWithEtag(path);
+      },
+      putIfAbsent:async (path:string,content:string)=>{
+        const etag=await v.putIfAbsent(path,content);
+        if(path===first && etag!==null)completedFirst=true;
+        return etag;
+      },
+      putIfMatch:(path:string,body:string,etag:string)=>v.putIfMatch(path,body,etag),
+    } as unknown as R2Client;
+    const result=await applyNotePlan(e,raced,p.plan_id,p.digest);
+    expect(result.status).toBe("partial");
+    expect(result.receipts.map(x=>x.state)).toEqual(["done","failed"]);
+    expect(result.receipts[1].error).toBe("NOTE_VERSION_CONFLICT");
+    expect(await v.get(first)).toContain("# first");
+    expect(await v.get(second)).toBeNull();
+    const again=await applyNotePlan(e,raced,p.plan_id,p.digest);
+    expect(again.status).toBe("partial");
+    expect(again.receipts).toEqual(result.receipts);
+  });
+
+  it("cannot strip or silently change a stable note identifier", async()=>{
+    const path=unique("Stable"),v=vault();
+    await v.put(path,"---\nid: fixed-note-id\n---\n# Intro");
+    await expect(prepareNoteChanges(v,[{
+      action:"patch_note",path,old_text:"id: fixed-note-id",new_text:"id: hacked-id",
+    }])).rejects.toMatchObject({code:"STABLE_NOTE_ID_REQUIRED"});
+    await expect(prepareNoteChanges(v,[{
+      action:"patch_note",path,old_text:"id: fixed-note-id",new_text:"",
+    }])).rejects.toMatchObject({code:"STABLE_NOTE_ID_REQUIRED"});
+  });
+
 });
