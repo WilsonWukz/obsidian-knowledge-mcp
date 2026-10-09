@@ -341,6 +341,9 @@ const defaults={gatewayUrl:'',projectPrefix:'INSES/',autoSync:false};
 const friendly={
   LOCAL_NOT_INITIALIZED:'先点击「Initialize local history」，只建立本地版本基线。',
   GATEWAY_NOT_CONFIGURED:'受控同步网关尚未配置，Fetch/Push 不可使用。',
+  ADOPTION_DISABLED:'云端尚未显式启用一次性迁移许可。',
+  GENESIS_MISMATCH:'云端与 Mac 的初始文件不完全一致。请先核对，不要强制覆盖。',
+  SOURCE_CHANGED:'迁移中云端文件发生变化，已中止；先停用旧同步写入者。',
   KEYCHAIN_TOKEN_MISSING:'系统钥匙串中找不到授权凭证；密钥不会保存在 Vault。',
   REMOTE_NOT_INITIALIZED:'远端受控版本库尚未经过审核初始化，不能直接从旧 R2 内容推送。',
   UNRELATED_HISTORY:'本地与云端没有经过验证的共同祖先。禁止覆盖；请先完成迁移对账。',
@@ -458,6 +461,7 @@ class GatewayRemote {
   status(){return this.rpc('status');}
   async get(id){const r=await this.rpc('get',{id});return r.commit;}
   push(input){return this.rpc('push',{input});}
+  adopt(expectedGenesisId){return this.rpc('adopt_legacy_vault',{expectedGenesisId,ack:'I_HAVE_DISABLED_LEGACY_WRITERS'});}
 }
 class ConfirmModal extends Modal {
   constructor(app,{title,body,buttonText='确认执行',onConfirm}){super(app);this.title=title;this.body=body;this.buttonText=buttonText;this.onConfirm=onConfirm;}
@@ -490,6 +494,22 @@ class GuardedSyncView extends ItemView {
       await this.review({title:'建立本地初始快照',body:`只对 ${folder}/INSES/ 建立本地版本历史。不会改动笔记，也不会上传。\n存储路径：${this.plugin.store.dir}`,confirm:'初始化',run:()=>this.plugin.engine.initialize()});
     }));
     button(main,'Fetch',()=>this.action(async()=>{const value=await this.plugin.engine.fetch();new Notice('Fetch：'+value.disposition+'；本地文件未改动。');}));
+    button(main,'Adopt legacy baseline (one-time)',()=>this.action(async()=>{
+      const state=this.plugin.engine.state;
+      if(!state)throw new SyncError('LOCAL_NOT_INITIALIZED');
+      const genesis=Object.values(state.commits).find(c=>c.parents.length===0);
+      if(!genesis||genesis.id!==state.headId)throw new SyncError('LOCAL_COMMITS_REQUIRE_MERGE');
+      const status=await this.plugin.engine.status();
+      if(status.staged.length||status.unstaged.length)throw new SyncError('WORKTREE_DIRTY');
+      if(!this.plugin.engine.remote)throw new SyncError('GATEWAY_NOT_CONFIGURED');
+      await this.review({title:'一次性核验旧云端基线',
+        body:'警告：必须先备份 Vault，停用 Remotely Save 对 INSES/ 的写入并撤销相关旧 R2/S3 写入凭据。\\n'
+          +'此操作只会在云端建立不可变初始快照，不会改动 Mac 文件。只有云端 INSES/ 与本地初始快照的 SHA-256 完全一致才会成功。\\n'
+          +'本地初始版本：'+genesis.id,
+        confirm:'我已停止旧写入者，开始比对',
+        run:async()=>{await this.plugin.engine.remote.adopt(genesis.id);await this.plugin.engine.fetch();}
+      });
+    }));
     let state=this.plugin.engine.state;
     if(!state){el('div',root,'gs-note','尚未初始化本地历史。请先在测试 Vault 中创建第一份只读基线。');return;}
     if(state.journal){
