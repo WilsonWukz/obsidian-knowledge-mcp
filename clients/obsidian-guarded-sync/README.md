@@ -1,4 +1,10 @@
-# Guarded Sync — Mac Obsidian companion (Phase C)
+# Guarded Sync — Mac Obsidian companion (v0.3)
+
+**Phase D backend code is feature-disabled by default.** See [deployment and cutover](../../docs/GUARDED_SYNC_PHASE_D.md) before connecting your Mac.
+
+After installing the plugin, use **Initialize local history**, then **Check remote mode**. `isolated_test` means a push ONLY updates separate version objects and does not touch old R2 notes. One-time **Adopt legacy baseline** is available only after `enable_sync_adoption=true` is manually enabled, old direct writers are stopped/revoked and the local/remote genesis hashes agree. After adoption and explicit cutover, the mode becomes `managed`, where Mac and Agent version commits share one HEAD.
+
+Do not delete or rename managed files automatically, and do not add private S3 tokens to the plugin settings. Owner token must live in macOS Keychain service `obsidian-guarded-sync`, account equal to SHA256(realpath(Vault)).
 
 **Development preview, independent of EvidenceWeave and the existing Obsidian Cloud/MCP.**
 
