@@ -1,0 +1,38 @@
+name: Build Mac Guarded Sync plugin
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'clients/obsidian-guarded-sync/**'
+      - '.github/workflows/build-guarded-sync-mac.yml'
+  pull_request:
+    paths:
+      - 'clients/obsidian-guarded-sync/**'
+      - '.github/workflows/build-guarded-sync-mac.yml'
+
+permissions:
+  contents: read
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node clients/obsidian-guarded-sync/scripts/build.mjs
+      - run: node --check clients/obsidian-guarded-sync/main.js
+      - run: node --experimental-strip-types --test clients/obsidian-guarded-sync/tests/*.cjs
+      - name: Package test-only Mac plugin
+        run: |
+          mkdir -p dist/guarded-sync
+          cp clients/obsidian-guarded-sync/{main.js,manifest.json,styles.css} dist/guarded-sync/
+          cd dist
+          zip -qr guarded-sync-mac-v0.3.0.zip guarded-sync
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guarded-sync-mac-v0.3.0-test-only
+          path: dist/guarded-sync-mac-v0.3.0.zip
+          if-no-files-found: error
+          retention-days: 30
