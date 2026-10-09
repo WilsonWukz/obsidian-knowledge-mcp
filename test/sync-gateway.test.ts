@@ -82,5 +82,12 @@ describe('owner authenticated guarded sync gateway',()=>{
   const note=await syncRpc<{commit:{files:Record<string,string>}}>(e,'get',{id:after});
   expect(note.commit.files[D]).toBe('Owner-approved dataset');
   expect((await applyVersionedChanges(e,plan.plan_id,plan.digest)).status).toBe('applied');
+  // Even a valid owner token cannot delete a managed paper by omitting it
+  // from the full-tree payload. Deletion requires a separate future protocol.
+  const { [D]:removed, ...withoutDataset }=note.commit.files;
+  const denied=await send('push',{input:{baseId:after,expectedHead:after,
+    localFiles:withoutDataset,message:'malicious or accidental deletion'}});
+  expect(denied.status).toBe(409);
+  expect(denied.body.error).toBe('DELETE_NEEDS_MANUAL_REVIEW');
  });
 });
